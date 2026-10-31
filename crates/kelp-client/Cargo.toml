@@ -1,0 +1,39 @@
+[package]
+name = "kelp-client"
+description = "Kelp client library: server connections, content cache and workspace operations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+blake3.workspace = true
+bytes.workspace = true
+diffy.workspace = true
+dirs.workspace = true
+fd-lock.workspace = true
+kelp-cas.workspace = true
+kelp-core.workspace = true
+kelp-plugin.workspace = true
+kelp-proto.workspace = true
+kelp-workspace.workspace = true
+postcard.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+serde.workspace = true
+similar.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+kelp-testkit = { workspace = true, features = ["net", "wasm"] }
+
+[lints]
+workspace = true

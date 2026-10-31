@@ -1,0 +1,60 @@
+[package]
+name = "kelp-server"
+description = "Kelp server: all-in-one, commit or edge role."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "kelp-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+argon2.workspace = true
+base64.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+clap.workspace = true
+getrandom.workspace = true
+kelp-cas.workspace = true
+kelp-client.workspace = true
+kelp-core.workspace = true
+kelp-meta.workspace = true
+kelp-plugin.workspace = true
+kelp-proto.workspace = true
+openraft.workspace = true
+postcard.workspace = true
+quinn.workspace = true
+redb.workspace = true
+reqwest.workspace = true
+ring.workspace = true
+rcgen.workspace = true
+rpassword.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+serde_json.workspace = true
+kelp-workspace.workspace = true
+kelp-testkit = { workspace = true, features = ["net", "s3"] }
+
+[[bench]]
+name = "server"
+harness = false
+
+[lints]
+workspace = true

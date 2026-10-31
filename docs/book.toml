@@ -1,0 +1,13 @@
+[book]
+title = "The Kelp Book"
+authors = ["Evan Luo"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/EvanLuo42/kelp"
+edit-url-template = "https://github.com/EvanLuo42/kelp/edit/main/docs/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

@@ -1,0 +1,13 @@
+# Plugins used by Kelp's tests, built for wasm32-unknown-unknown by
+# `kelp_testkit::wasm`. Kept out of the main workspace because they target
+# WebAssembly.
+[workspace]
+members = ["fixed-chunker", "line-merger", "size-differ", "todo-trigger"]
+resolver = "3"
+
+[workspace.dependencies]
+wit-bindgen = "0.63"
+
+[profile.release]
+opt-level = "s"
+panic = "abort"

@@ -1,0 +1,60 @@
+package kelp:plugin@0.1.0;
+
+interface types {
+    /// Stream-relative path with `/` separators.
+    type path = string;
+
+    record span {
+        offset: u64,
+        len: u32,
+    }
+
+    record file-version {
+        path: path,
+        content: list<u8>,
+    }
+
+    variant merge-result {
+        merged(list<u8>),
+        conflict(string),
+    }
+
+    record change {
+        path: path,
+        /// `add`, `edit` or `delete`.
+        action: string,
+        size: u64,
+    }
+
+    variant verdict {
+        accept,
+        reject(string),
+    }
+}
+
+/// Format-aware chunking. Only affects deduplication, never correctness.
+world chunker {
+    use types.{span};
+    export chunk: func(path: string, data: list<u8>) -> list<span>;
+}
+
+/// Three-way merge for binary or structured formats.
+world merger {
+    use types.{file-version, merge-result};
+    export merge: func(base: file-version, ours: file-version, theirs: file-version) -> merge-result;
+}
+
+/// Human-readable change summaries for review.
+world differ {
+    use types.{file-version};
+    export describe: func(old: option<file-version>, new: option<file-version>) -> string;
+}
+
+/// Server-side pre-submit validation.
+world trigger {
+    use types.{change, verdict};
+    /// Returns the new content of a file of the change, or none if the file
+    /// is deleted or not part of the change.
+    import read-file: func(path: string) -> option<list<u8>>;
+    export pre-submit: func(stream-path: string, author: string, description: string, changes: list<change>) -> verdict;
+}

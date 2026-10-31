@@ -1,0 +1,26 @@
+[package]
+name = "kelp-core"
+description = "Core types shared by every Kelp component: ids, depot paths, typemap."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+blake3.workspace = true
+globset.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+kelp-testkit.workspace = true
+
+[lints]
+workspace = true

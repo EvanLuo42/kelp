@@ -1,0 +1,25 @@
+[package]
+name = "kelp-proto"
+description = "The kelp/1 wire protocol: framing, message types and version negotiation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+kelp-core.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+kelp-testkit.workspace = true
+
+[lints]
+workspace = true

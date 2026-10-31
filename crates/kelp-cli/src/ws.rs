@@ -1,0 +1,484 @@
+//! Commands that run inside a workspace.
+
+use std::path::{Path, PathBuf};
+
+use kelp_client::ops::{Op, Outcome, Revision};
+use kelp_client::{
+    Home, ResolveMode, ResolveOutcome, SkipReason, SnapshotSide, Workspace, render_diff,
+};
+use kelp_core::{DepotPath, LocalClId};
+use kelp_proto::{Reply, Request};
+use kelp_workspace::OpenAction;
+
+use crate::util::{action_name, connect, file_action, parse_cl, parse_cl_or_default, unexpected};
+use crate::{Accept, ClCmd, Cmd, SnapshotCmd, daemon};
+
+pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyhow::Result<()> {
+    let abs =
+        |paths: Vec<PathBuf>| -> Vec<PathBuf> { paths.into_iter().map(|p| cwd.join(p)).collect() };
+    let op = match command {
+        Cmd::Sync { targets } => {
+            let mut rev = None;
+            let mut paths = Vec::new();
+            for target in targets {
+                match target.strip_prefix('@') {
+                    Some(r) => {
+                        rev = Some(match r.parse() {
+                            Ok(cl) => Revision::Change(cl),
+                            Err(_) => Revision::Label(r.to_owned()),
+                        })
+                    }
+                    // A bare number is a changelist, as it always was.
+                    None if target.parse::<u64>().is_ok() => {
+                        rev = Some(Revision::Change(target.parse()?))
+                    }
+                    None => paths.push(cwd.join(target)),
+                }
+            }
+            Op::SyncTo { rev, paths }
+        }
+        Cmd::Status => Op::Status,
+        Cmd::Fstat { paths } => Op::Inspect { paths: abs(paths) },
+        Cmd::Diff { paths } => Op::Diff { paths: abs(paths) },
+        Cmd::Clean { paths, dry_run } => Op::Clean {
+            paths: abs(paths),
+            dry_run,
+        },
+        Cmd::Reconcile => Op::Reconcile,
+        Cmd::Add { paths, cl } => open(abs(paths), OpenAction::Add, cl)?,
+        Cmd::Edit { paths, cl } => open(abs(paths), OpenAction::Edit, cl)?,
+        Cmd::Delete { paths, cl } => open(abs(paths), OpenAction::Delete, cl)?,
+        Cmd::Revert { paths } => Op::Revert { paths: abs(paths) },
+        Cmd::Move { from, to, cl } => Op::Move {
+            from: cwd.join(from),
+            to: cwd.join(to),
+            cl: parse_cl_or_default(cl.as_deref())?,
+        },
+        Cmd::Resolve { paths, accept } => {
+            let mode = match accept {
+                Accept::Merge => ResolveMode::Auto,
+                Accept::Yours => ResolveMode::AcceptYours,
+                Accept::Theirs => ResolveMode::AcceptTheirs,
+            };
+            Op::Resolve {
+                paths: abs(paths),
+                mode,
+            }
+        }
+        Cmd::Cl(ClCmd::New { description }) => Op::ClNew { description },
+        Cmd::Cl(ClCmd::List) => Op::ClList,
+        Cmd::Cl(ClCmd::Delete { cl }) => Op::ClDelete { cl: parse_cl(&cl)? },
+        Cmd::Cl(ClCmd::Move { cl, paths }) => Op::ClMove {
+            cl: parse_cl(&cl)?,
+            paths: abs(paths),
+        },
+        Cmd::Cl(ClCmd::Split { path, hunk, to }) => match (hunk, to) {
+            (Some(hunk), Some(to)) => Op::AssignHunk {
+                path: cwd.join(path),
+                hunk,
+                to: parse_cl(&to)?,
+            },
+            _ => Op::Hunks {
+                path: cwd.join(path),
+            },
+        },
+        Cmd::Submit { cl, message, fixes } => Op::Submit {
+            cl: parse_cl_or_default(cl.as_deref())?,
+            message,
+            fixes,
+        },
+        Cmd::Shelve { cl } => Op::Shelve {
+            cl: parse_cl_or_default(cl.as_deref())?,
+        },
+        Cmd::Unshelve { shelf, cl } => Op::Unshelve {
+            shelf,
+            cl: cl.as_deref().map(parse_cl).transpose()?,
+        },
+        Cmd::Merge { from, cl: None } => Op::Merge {
+            from: from.as_deref().map(DepotPath::parse).transpose()?,
+        },
+        Cmd::Merge { from, cl: Some(cl) } => Op::Pick {
+            from: from.as_deref().map(DepotPath::parse).transpose()?,
+            cl,
+        },
+        Cmd::Undo { cl } => Op::Undo { cl },
+        Cmd::Unlock { paths, force } => Op::Unlock {
+            paths: abs(paths),
+            force,
+        },
+        Cmd::Snapshot(SnapshotCmd::Save { cl, message }) => Op::Snapshot {
+            cl: parse_cl_or_default(cl.as_deref())?,
+            message,
+        },
+        Cmd::Snapshot(SnapshotCmd::List) => Op::Snapshots,
+        Cmd::Snapshot(SnapshotCmd::Restore { id }) => Op::Restore { id },
+        Cmd::Snapshot(SnapshotCmd::Delete { id }) => Op::DeleteSnapshot { id },
+        Cmd::Snapshot(SnapshotCmd::Diff { old, new }) => Op::DiffSnapshots {
+            old: SnapshotSide::Snapshot(old),
+            new: new.map_or(SnapshotSide::Working, SnapshotSide::Snapshot),
+        },
+        command => return server_query(home, cwd, command).await,
+    };
+    print(daemon::execute(home, cwd, op, no_daemon).await?);
+    Ok(())
+}
+
+fn open(paths: Vec<PathBuf>, action: OpenAction, cl: Option<String>) -> anyhow::Result<Op> {
+    Ok(Op::Open {
+        paths,
+        action,
+        cl: parse_cl_or_default(cl.as_deref())?,
+    })
+}
+
+fn print(outcome: Outcome) {
+    match outcome {
+        Outcome::Done => {}
+        Outcome::Synced(report) => {
+            for p in &report.updated {
+                println!("updated  {p}");
+            }
+            for p in &report.deleted {
+                println!("deleted  {p}");
+            }
+            for (p, why) in &report.skipped {
+                let why = match why {
+                    SkipReason::Opened => "opened; run `kelp resolve`",
+                    SkipReason::LocallyModified => "modified locally without being opened",
+                    SkipReason::Untracked => "an untracked file is in the way",
+                };
+                eprintln!("skipped  {p} ({why})");
+            }
+            for a in &report.artifacts {
+                match a.now {
+                    Some((id, cl)) => println!("artifact {} <- {} {id} (@{cl})", a.to, a.name),
+                    None => println!("artifact {} emptied", a.to),
+                }
+            }
+            println!("Synced to changelist {}.", report.cl);
+        }
+        Outcome::Status {
+            status,
+            changelists,
+            have_cl,
+        } => {
+            for cl in &changelists {
+                let files: Vec<_> = status
+                    .opened
+                    .iter()
+                    .filter(|(_, _, owner)| *owner == cl.id)
+                    .collect();
+                let shelf = cl
+                    .shelf
+                    .map(|s| format!(" (shelved as {s})"))
+                    .unwrap_or_default();
+                match (cl.id, files.is_empty()) {
+                    (LocalClId::DEFAULT, true) => continue,
+                    (LocalClId::DEFAULT, false) => println!("Changelist default:"),
+                    (_, true) => {
+                        println!("Changelist {} \"{}\"{shelf}: empty", cl.id, cl.description);
+                        continue;
+                    }
+                    (_, false) => println!("Changelist {} \"{}\"{shelf}:", cl.id, cl.description),
+                }
+                for (path, action, _) in files {
+                    let note = if status.unresolved.contains(path) {
+                        "  (needs resolve)"
+                    } else {
+                        ""
+                    };
+                    println!("  {:<7}{path}{note}", action_name(*action));
+                }
+            }
+            if status.has_unopened_changes() {
+                println!("Not opened (run `kelp reconcile`):");
+                for (paths, label) in [
+                    (&status.modified, "edit"),
+                    (&status.added, "add"),
+                    (&status.deleted, "delete"),
+                ] {
+                    for p in paths {
+                        println!("  {label:<7}{p}");
+                    }
+                }
+            }
+            if status.opened.is_empty() && !status.has_unopened_changes() {
+                println!("No changes; synced to changelist {have_cl}.");
+            }
+        }
+        Outcome::Opened(opened) => {
+            for (path, action) in opened {
+                println!("{:<7}{path}", action_name(action));
+            }
+        }
+        Outcome::Reverted(paths) => {
+            for p in paths {
+                println!("reverted {p}");
+            }
+        }
+        Outcome::Resolved(outcomes) => {
+            for (path, outcome) in outcomes {
+                let text = match outcome {
+                    ResolveOutcome::Merged => "merged",
+                    ResolveOutcome::TookYours => "kept yours",
+                    ResolveOutcome::TookTheirs => "took theirs",
+                    ResolveOutcome::Conflicted => {
+                        "conflicts; edit the file, then `kelp resolve --accept yours`"
+                    }
+                    ResolveOutcome::NeedsChoice => "needs `--accept yours` or `--accept theirs`",
+                };
+                println!("{path}: {text}");
+            }
+        }
+        Outcome::Submitted(n) => println!("Submitted changelist {n}."),
+        Outcome::Shelved(n) => println!("Shelved as {n}."),
+        Outcome::Unshelved { cl, opened } => {
+            for (path, action) in opened {
+                println!("{:<7}{path}", action_name(action));
+            }
+            println!("Unshelved into changelist {cl}.");
+        }
+        Outcome::Merged(report) => match report.changelist {
+            None => println!("Nothing to merge."),
+            Some(cl) => {
+                for (path, action) in &report.opened {
+                    let note = if report.conflicts.contains(path) {
+                        "  (needs resolve)"
+                    } else {
+                        ""
+                    };
+                    println!("{:<7}{path}{note}", action_name(*action));
+                }
+                println!(
+                    "Merge through changelist {} opened in {cl}.",
+                    report.through
+                );
+            }
+        },
+        Outcome::Changelist(id) => println!("Created changelist {id}."),
+        Outcome::Changelists(list) => {
+            for cl in list {
+                println!(
+                    "{:<8}{:>5} files  {}",
+                    cl.id.to_string(),
+                    cl.files,
+                    cl.description
+                );
+            }
+        }
+        Outcome::Hunks(hunks) => {
+            for h in hunks {
+                println!(
+                    "{:>3}  {:<8} lines {}-{}  {}",
+                    h.number,
+                    h.owner.to_string(),
+                    h.first_line,
+                    h.last_line,
+                    h.preview
+                );
+            }
+        }
+        Outcome::Snapshot(id) => println!("Saved snapshot {id}."),
+        Outcome::Snapshots(list) => {
+            for s in list {
+                let kind = if s.automatic { "auto" } else { "    " };
+                println!(
+                    "{:>4}  {kind}  {:<8} {} files  {}",
+                    s.id,
+                    s.cl.to_string(),
+                    s.files.len(),
+                    s.message
+                );
+            }
+        }
+        Outcome::Restored(paths) => {
+            for p in paths {
+                println!("restored {p}");
+            }
+        }
+        Outcome::Files(reports) => {
+            for r in reports {
+                let mut notes = Vec::new();
+                match r.opened {
+                    Some((action, cl)) => {
+                        notes.push(format!("opened for {} in {cl}", action_name(action)))
+                    }
+                    None if !r.tracked && r.exists => notes.push("not tracked".into()),
+                    None if !r.tracked => notes.push("not in the workspace".into()),
+                    None => {}
+                }
+                if r.modified {
+                    notes.push("modified without being opened".into());
+                }
+                if r.needs_resolve {
+                    notes.push("needs resolve".into());
+                }
+                if r.out_of_date {
+                    notes.push("newer revision on the server".into());
+                }
+                match (&r.locked_by, r.locked_here) {
+                    (Some(_), true) => notes.push("locked by this workspace".into()),
+                    (Some((user, ws)), false) => notes.push(format!("locked by {user}@{ws}")),
+                    (None, _) if r.exclusive => notes.push("exclusive".into()),
+                    _ => {}
+                }
+                if notes.is_empty() {
+                    notes.push("up to date".into());
+                }
+                println!("{}: {}", r.path, notes.join(", "));
+            }
+        }
+        Outcome::Diff(diffs) => {
+            for d in diffs {
+                print!("{}", render_diff(&d));
+            }
+        }
+        Outcome::Cleaned(report) => {
+            for path in &report.restored {
+                println!("restored {path}");
+            }
+            for path in &report.removed {
+                println!("deleted  {path}");
+            }
+        }
+    }
+}
+
+/// Runs commands that only query the server for the workspace's stream.
+async fn server_query(home: &Home, cwd: &Path, command: Cmd) -> anyhow::Result<()> {
+    let ws = Workspace::discover(cwd)?;
+    let conn = connect(home, &ws.config().server).await?;
+    match command {
+        Cmd::CopyUp { message } => {
+            let request = Request::CopyUp {
+                stream: ws.stream().to_string(),
+                description: message,
+            };
+            let Reply::Submitted { cl, .. } = conn.call(&request).await? else {
+                return Err(unexpected());
+            };
+            println!("Copied {} to its parent as changelist {cl}.", ws.stream());
+        }
+        Cmd::Locks => {
+            let Reply::Locks(locks) = conn
+                .call(&Request::ListLocks {
+                    stream: ws.stream().to_string(),
+                })
+                .await?
+            else {
+                return Err(unexpected());
+            };
+            for l in locks {
+                println!("{:<40} {}@{}", l.path, l.user, l.workspace);
+            }
+        }
+        Cmd::DeleteShelf { shelf } => {
+            conn.call(&Request::DeleteShelf { cl: shelf }).await?;
+        }
+        Cmd::Annotate { path } => {
+            let depot = match path.starts_with("//") {
+                true => kelp_core::DepotPath::parse(&path)?,
+                false => ws.depot_path_of(&cwd.join(&path))?,
+            };
+            let lines = kelp_client::annotate(&conn, &home.cache(), &depot).await?;
+            let mut authors = std::collections::HashMap::new();
+            for line in &lines {
+                if let std::collections::hash_map::Entry::Vacant(entry) = authors.entry(line.cl) {
+                    let author = match conn.call(&Request::Describe { cl: line.cl }).await? {
+                        Reply::Describe(d) => d.summary.author,
+                        _ => String::new(),
+                    };
+                    entry.insert(author);
+                }
+                print!("{:>6} {:<12} {}", line.cl, authors[&line.cl], line.text);
+            }
+        }
+        Cmd::Print { path } => {
+            let (spec, at) = match path.rsplit_once('@') {
+                Some((spec, rev)) => match rev.parse() {
+                    Ok(cl) => (spec, Some(cl)),
+                    Err(_) => {
+                        let request = Request::GetLabel {
+                            name: rev.to_owned(),
+                        };
+                        let Reply::Label(label) = conn.call(&request).await? else {
+                            return Err(unexpected());
+                        };
+                        (spec, Some(label.cl))
+                    }
+                },
+                None => (path.as_str(), None),
+            };
+            let depot = match spec.starts_with("//") {
+                true => kelp_core::DepotPath::parse(spec)?,
+                false => ws.depot_path_of(&cwd.join(spec))?,
+            };
+            let bytes = kelp_client::read_file(&conn, &home.cache(), &depot, at).await?;
+            use std::io::Write;
+            std::io::stdout().write_all(&bytes)?;
+        }
+        Cmd::Filelog { path } => {
+            let depot = ws.depot_path_of(&cwd.join(path))?;
+            let Reply::Filelog(revs) = conn
+                .call(&Request::Filelog {
+                    path: depot.to_string(),
+                })
+                .await?
+            else {
+                return Err(unexpected());
+            };
+            println!("{depot}");
+            for r in revs {
+                let purged = if r.purged { "  (purged)" } else { "" };
+                println!(
+                    "  #{:<4} change {:<6} {:<7} {} bytes{purged}",
+                    r.rev,
+                    r.cl,
+                    file_action(r.action),
+                    r.size
+                );
+            }
+        }
+        Cmd::Changes { stream, limit } => {
+            let stream = Some(stream.unwrap_or_else(|| ws.stream().to_string()));
+            let Reply::Changes(changes) = conn.call(&Request::Changes { stream, limit }).await?
+            else {
+                return Err(unexpected());
+            };
+            for c in changes {
+                let first_line = c.description.lines().next().unwrap_or_default();
+                println!("change {:<6} by {:<12} {first_line}", c.cl, c.author);
+            }
+        }
+        Cmd::Describe { cl } => {
+            let Reply::Describe(d) = conn.call(&Request::Describe { cl }).await? else {
+                return Err(unexpected());
+            };
+            println!(
+                "change {} on {} by {}\n",
+                d.summary.cl, d.summary.stream, d.summary.author
+            );
+            for line in d.summary.description.lines() {
+                println!("    {line}");
+            }
+            if !d.summary.issues.is_empty() {
+                let issues: Vec<String> = d
+                    .summary
+                    .issues
+                    .iter()
+                    .map(|k| match d.summary.fixes.contains(k) {
+                        true => format!("{k} (fixed)"),
+                        false => k.clone(),
+                    })
+                    .collect();
+                println!("\n    issues: {}", issues.join(", "));
+            }
+            println!();
+            for (path, action) in d.files {
+                println!("  {:<7}{path}", file_action(action));
+            }
+        }
+        _ => unreachable!("handled by admin::run"),
+    }
+    Ok(())
+}

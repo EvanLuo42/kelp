@@ -1,0 +1,36 @@
+[package]
+name = "kelp-cas"
+description = "Content-addressed storage: chunking, file manifests and blob store backends."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+bytes.workspace = true
+fastcdc.workspace = true
+futures.workspace = true
+kelp-core.workspace = true
+object_store.workspace = true
+redb.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+blake3.workspace = true
+criterion.workspace = true
+kelp-testkit = { workspace = true, features = ["s3"] }
+
+[[bench]]
+name = "cas"
+harness = false
+
+[lints]
+workspace = true

@@ -1,0 +1,37 @@
+[package]
+name = "kelp-testkit"
+description = "Shared fixtures for Kelp tests: sandboxed file system, manual clock, data generators."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[features]
+s3 = ["dep:kelp-cas"]
+meta = ["dep:kelp-meta"]
+wasm = ["dep:wit-component"]
+net = ["dep:base64", "dep:kelp-client", "dep:kelp-daemon", "dep:kelp-proto", "dep:kelp-server", "dep:kelp-workspace", "dep:serde_json", "dep:tokio"]
+
+[dependencies]
+base64 = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+kelp-client = { workspace = true, optional = true }
+kelp-cas = { workspace = true, optional = true }
+kelp-core.workspace = true
+kelp-daemon = { workspace = true, optional = true }
+kelp-meta = { workspace = true, optional = true }
+kelp-proto = { workspace = true, optional = true }
+kelp-server = { workspace = true, optional = true }
+tempfile.workspace = true
+kelp-workspace = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+wit-component = { workspace = true, optional = true }
+
+[lints]
+workspace = true

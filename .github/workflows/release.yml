@@ -1,0 +1,68 @@
+# Publishes a release when a tag such as v0.2.0 is pushed. Before tagging,
+# set the version in Cargo.toml (the workspace version and every kelp-*
+# workspace dependency) and give the version a section in CHANGELOG.md.
+#
+# Needs a CARGO_REGISTRY_TOKEN secret in the crates-io environment.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  prepare:
+    name: Check the version and changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check that the tag matches the version
+        run: |
+          version=$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name == "kelp-server") | .version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version"
+            exit 1
+          fi
+      - name: Extract the release notes
+        run: .github/scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: notes.md
+
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish to crates.io
+    needs: [prepare, ci]
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish
+        run: cargo publish --workspace --exclude kelp-testkit --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release:
+    name: Create the GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: notes
+      - name: Create the release
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}

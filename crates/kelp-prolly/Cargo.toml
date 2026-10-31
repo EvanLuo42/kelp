@@ -1,0 +1,31 @@
+[package]
+name = "kelp-prolly"
+description = "History-independent, content-defined B-trees (prolly trees) over byte keys."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+blake3.workspace = true
+kelp-core.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+kelp-testkit.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "prolly"
+harness = false
+
+[lints]
+workspace = true

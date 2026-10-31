@@ -1,0 +1,33 @@
+[package]
+name = "kelp-vfs"
+description = "Projected workspaces: files appear immediately and download on first use."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "0.14", default-features = false }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_ProjectedFileSystem",
+    "Win32_System_Com",
+] }
+
+[dev-dependencies]
+kelp-testkit.workspace = true
+
+[lints]
+workspace = true

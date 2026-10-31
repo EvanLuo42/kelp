@@ -1,0 +1,30 @@
+[package]
+name = "kelp-daemon"
+description = "The engine of kelpd: runs workspace operations, watches workspaces and hosts projections."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+kelp-client.workspace = true
+kelp-core.workspace = true
+kelp-vfs.workspace = true
+kelp-workspace.workspace = true
+notify.workspace = true
+serde.workspace = true
+toml.workspace = true
+kelp-proto.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+kelp-testkit = { workspace = true, features = ["net"] }
+
+[lints]
+workspace = true

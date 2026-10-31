@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Start an S3 test server
+        if: runner.os == 'Linux'
+        run: |
+          pipx install "moto[server]"
+          moto_server -p 15000 > moto.log 2>&1 &
+          for _ in $(seq 30); do curl -sf http://127.0.0.1:15000/ > /dev/null && break; sleep 1; done
+          curl -sf -X PUT http://127.0.0.1:15000/kelp-test
+          {
+            echo "KELP_TEST_S3_ENDPOINT=http://127.0.0.1:15000"
+            echo "KELP_TEST_S3_BUCKET=kelp-test"
+            echo "AWS_ACCESS_KEY_ID=test"
+            echo "AWS_SECRET_ACCESS_KEY=test"
+          } >> "$GITHUB_ENV"
+      - name: Test
+        run: cargo test --workspace --all-features --no-fail-fast
+      - name: Check that the binaries install
+        run: |
+          cargo install --locked --debug --target-dir target --path crates/kelp-server --root install
+          cargo install --locked --debug --target-dir target --path crates/kelp-cli --root install
+          install/bin/kelp-server --version
+          install/bin/kelp --version
+          install/bin/kelpd --version
+        shell: bash
+
+  book:
+    name: Book
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook,mdbook-mermaid
+      - run: mdbook build docs
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo package --workspace --exclude kelp-testkit --locked

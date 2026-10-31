@@ -1,0 +1,22 @@
+[package]
+name = "kelp-plugin"
+description = "WASM component host for chunker, merger, differ and trigger plugins."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+kelp-testkit = { workspace = true, features = ["wasm"] }
+
+[lints]
+workspace = true

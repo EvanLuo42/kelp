@@ -1,0 +1,34 @@
+[package]
+name = "kelp-meta"
+description = "Metadata: replicated-log commands, deterministic state machine, Merkle trees, locks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+blake3.workspace = true
+kelp-core.workspace = true
+kelp-prolly.workspace = true
+redb.workspace = true
+postcard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+kelp-testkit = { workspace = true, features = ["meta"] }
+redb.workspace = true
+
+[[bench]]
+name = "meta"
+harness = false

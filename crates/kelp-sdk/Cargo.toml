@@ -1,0 +1,28 @@
+[package]
+name = "kelp-sdk"
+description = "C ABI for engine and DCC integrations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+kelp-client.workspace = true
+kelp-core.workspace = true
+kelp-proto.workspace = true
+kelp-workspace.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+kelp-testkit = { workspace = true, features = ["net"] }
+
+[lints]
+workspace = true
