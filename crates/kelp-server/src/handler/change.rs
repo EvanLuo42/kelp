@@ -170,8 +170,8 @@ pub(super) fn changes(
         changes
             .iter()
             .filter(|c| access.sees(&c.stream))
-            .map(summary)
-            .collect(),
+            .map(|c| summary(&reader, c))
+            .collect::<Result<_, _>>()?,
     ))
 }
 
@@ -192,7 +192,7 @@ pub(super) fn describe(state: &State, access: &Access, cl: u64) -> Response {
         .map(|c| (c.path.to_string(), file_action(&c.action)))
         .collect();
     Ok(Reply::Describe(ChangeDetail {
-        summary: summary(&record),
+        summary: summary(&reader, &record)?,
         files,
     }))
 }
@@ -469,14 +469,20 @@ fn rev_action(action: RevAction) -> kelp_proto::rpc::FileAction {
     }
 }
 
-pub(super) fn summary(c: &Changelist) -> ChangeSummary {
-    ChangeSummary {
+pub(super) fn summary(
+    reader: &kelp_meta::db::Reader,
+    c: &Changelist,
+) -> Result<ChangeSummary, ErrorReply> {
+    let profile = reader.profile_of(&c.author).map_err(meta_error)?;
+    Ok(ChangeSummary {
         cl: c.number.0,
         stream: c.stream.to_string(),
         author: c.author.clone(),
+        author_name: profile.display_name,
+        author_email: profile.emails.into_iter().next(),
         description: c.description.clone(),
         submitted_at: c.submitted_at,
         issues: c.issues.clone(),
         fixes: c.fixes.clone(),
-    }
+    })
 }

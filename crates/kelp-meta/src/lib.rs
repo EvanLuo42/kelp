@@ -17,8 +17,8 @@ pub mod review;
 pub mod tree;
 
 pub use command::{
-    ArtifactContents, Command, FileAction, FileChange, FileData, Integration, ShelfContents,
-    StreamKind, Submission, Timestamp,
+    ArtifactContents, Command, FileAction, FileChange, FileData, Integration, ProfileEdit,
+    ShelfContents, StreamKind, Submission, Timestamp,
 };
 pub use db::MetaDb;
 pub use governance::Governance;

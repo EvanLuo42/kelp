@@ -194,9 +194,10 @@ fn line(r: &ReviewSummary) -> String {
         ReviewState::Closed => "closed".to_owned(),
     };
     let title = r.description.lines().next().unwrap_or_default();
+    let author = r.author_name.as_deref().unwrap_or(&r.author);
     format!(
-        "review {:<6} v{:<3} {:<12} {:<16} {title}",
-        r.shelf, r.version, r.author, state
+        "review {:<6} v{:<3} {author:<12} {:<16} {title}",
+        r.shelf, r.version, state
     )
 }
 

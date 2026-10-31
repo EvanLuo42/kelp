@@ -446,6 +446,33 @@ enum UserCmd {
     /// Merges user `from` into `into`, or renames `from` if `into` does not
     /// exist; history keeps the old name, which becomes an alias.
     Merge { from: String, into: String },
+    /// Sets the name shown for a user in changes and reviews.
+    ///
+    /// Without a name, clears it. Defaults to yourself; others need an
+    /// administrator.
+    Name {
+        display_name: Option<String>,
+        #[arg(long)]
+        user: Option<String>,
+    },
+    /// Adds an email address to a user; the first becomes the primary one.
+    AddEmail {
+        email: String,
+        #[arg(long)]
+        user: Option<String>,
+    },
+    /// Removes an email address from a user.
+    RemoveEmail {
+        email: String,
+        #[arg(long)]
+        user: Option<String>,
+    },
+    /// Makes one of a user's email addresses the primary one.
+    PrimaryEmail {
+        email: String,
+        #[arg(long)]
+        user: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

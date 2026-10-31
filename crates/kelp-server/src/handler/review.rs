@@ -112,7 +112,7 @@ pub(super) async fn get(state: &Arc<State>, access: Access, shelf: u64) -> Respo
         let reader = state.reader()?;
         let checks = reader.review_checks(&review).map_err(meta_error)?;
         Ok(Reply::Review(ReviewInfo {
-            summary: summary(&review, checks.iter().all(|c| c.met)),
+            summary: summary(&reader, &review, checks.iter().all(|c| c.met))?,
             reviewers: review.reviewers.clone(),
             files: review
                 .files()
@@ -163,7 +163,7 @@ pub(super) async fn list(
         {
             if access.sees(&review.stream) {
                 let checks = reader.review_checks(&review).map_err(meta_error)?;
-                out.push(summary(&review, checks.iter().all(|c| c.met)));
+                out.push(summary(&reader, &review, checks.iter().all(|c| c.met))?);
             }
         }
         Ok(Reply::Reviews(out))
@@ -207,11 +207,20 @@ async fn commit(state: &State, access: &Access, cmd: Governance) -> Response {
     Ok(Reply::Ok)
 }
 
-fn summary(review: &Review, ready: bool) -> ReviewSummary {
-    ReviewSummary {
+fn summary(
+    reader: &kelp_meta::db::Reader,
+    review: &Review,
+    ready: bool,
+) -> Result<ReviewSummary, ErrorReply> {
+    let author_name = reader
+        .profile_of(&review.author)
+        .map_err(meta_error)?
+        .display_name;
+    Ok(ReviewSummary {
         shelf: review.shelf.0,
         stream: review.stream.to_string(),
         author: review.author.clone(),
+        author_name,
         description: review.description.clone(),
         version: review.version(),
         state: match review.state {
@@ -220,7 +229,7 @@ fn summary(review: &Review, ready: bool) -> ReviewSummary {
             record::ReviewState::Closed => ReviewState::Closed,
         },
         ready,
-    }
+    })
 }
 
 fn not_found(what: &str, shelf: u64) -> ErrorReply {

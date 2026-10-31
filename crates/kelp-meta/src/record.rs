@@ -7,6 +7,19 @@ use crate::{
     ArtifactContents, FileChange, Integration, LockDomain, ShelfContents, StreamKind, Timestamp,
 };
 
+/// What a user is called and reached by, apart from the account name.
+///
+/// It lives beside [`User`] rather than in it, so that accounts without a
+/// profile need no migration.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Profile {
+    /// The name to show instead of the account name, such as `Alice Chen`.
+    pub display_name: Option<String>,
+    /// The addresses of the user, the primary one first. An address belongs
+    /// to at most one user.
+    pub emails: Vec<String>,
+}
+
 /// A user account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {

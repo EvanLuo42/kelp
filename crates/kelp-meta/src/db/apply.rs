@@ -351,6 +351,7 @@ pub(super) fn apply(txn: &WriteTransaction, cmd: &Command, origin: Origin) -> Re
         Command::SetDisabled { user, disabled } => {
             super::accounts::set_disabled(txn, user, *disabled)?
         }
+        Command::EditProfile { user, edit } => super::accounts::edit_profile(txn, user, edit)?,
         Command::SetMembership {
             group,
             user,

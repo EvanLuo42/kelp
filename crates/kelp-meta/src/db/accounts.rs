@@ -3,13 +3,16 @@
 use redb::{ReadableTable, WriteTransaction};
 
 use super::{
-    ALIASES, AUDIT, DISABLED, GROUPS, LOCKS, LOG, PROTECTIONS, REVIEW_RULES, REVIEWS, Reader,
-    SETTINGS, SHELVES, SSO_EXPECTED, SSO_LINKS, SSO_SUBJECTS, TOKENS, USERS, dec, enc, load_user,
-    name_key, save_user,
+    ALIASES, AUDIT, DISABLED, EMAIL_OWNERS, GROUPS, LOCKS, LOG, PROFILES, PROTECTIONS,
+    REVIEW_RULES, REVIEWS, Reader, SETTINGS, SHELVES, SSO_EXPECTED, SSO_LINKS, SSO_SUBJECTS,
+    TOKENS, USERS, dec, enc, load_user, name_key, save_user,
 };
 use crate::lock::Lock;
-use crate::record::{AuditEntry, Group, Review, Shelf, Token, User};
-use crate::{Command, Error, Result};
+use crate::record::{AuditEntry, Group, Profile, Review, Shelf, Token, User};
+use crate::{Command, Error, ProfileEdit, Result};
+
+/// The most addresses a user may have.
+const MAX_EMAILS: usize = 16;
 
 /// A single sign-on identity: the provider's issuer URL and the subject it
 /// identifies the user by, which unlike a user name never changes.
@@ -141,6 +144,88 @@ pub(super) fn set_disabled(txn: &WriteTransaction, user: &str, disabled: bool) -
     Ok(())
 }
 
+fn valid_display_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    let ok = !name.is_empty() && name.chars().count() <= 64 && !name.chars().any(char::is_control);
+    ok.then(|| name.to_owned())
+        .ok_or_else(|| Error::Invalid(format!("invalid display name {name:?}")))
+}
+
+fn valid_email(email: &str) -> Result<String> {
+    let email = email.trim();
+    let ok = email.len() <= 254
+        && !email.chars().any(|c| c.is_whitespace() || c.is_control())
+        && email.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+        });
+    ok.then(|| email.to_owned())
+        .ok_or_else(|| Error::Invalid(format!("invalid email address {email:?}")))
+}
+
+pub(super) fn edit_profile(txn: &WriteTransaction, user: &str, edit: &ProfileEdit) -> Result<()> {
+    let user = load_user(txn, user)?;
+    let key = name_key(&user.name);
+    let mut profiles = txn.open_table(PROFILES)?;
+    let mut profile: Profile = match profiles.get(key.as_str())? {
+        Some(v) => dec("profiles", v.value())?,
+        None => Profile::default(),
+    };
+    let mut owners = txn.open_table(EMAIL_OWNERS)?;
+    match edit {
+        ProfileEdit::DisplayName(name) => {
+            profile.display_name = name.as_deref().map(valid_display_name).transpose()?;
+        }
+        ProfileEdit::AddEmail(email) => {
+            let email = valid_email(email)?;
+            let email_key = email.to_lowercase();
+            if let Some(owner) = owners.get(email_key.as_str())? {
+                let owner = owner.value();
+                return Err(Error::AlreadyExists(
+                    match owner.eq_ignore_ascii_case(&user.name) {
+                        true => format!("{email} is already an address of {owner}"),
+                        false => format!("the address {email} belongs to {owner}"),
+                    },
+                ));
+            }
+            if profile.emails.len() >= MAX_EMAILS {
+                return Err(Error::Invalid(format!(
+                    "{} already has {MAX_EMAILS} addresses",
+                    user.name
+                )));
+            }
+            owners.insert(email_key.as_str(), user.name.as_str())?;
+            profile.emails.push(email);
+        }
+        ProfileEdit::RemoveEmail(email) => {
+            let email_key = email.trim().to_lowercase();
+            let before = profile.emails.len();
+            profile.emails.retain(|e| e.to_lowercase() != email_key);
+            if profile.emails.len() == before {
+                return Err(Error::NotFound(format!("address {email} of {}", user.name)));
+            }
+            owners.remove(email_key.as_str())?;
+        }
+        ProfileEdit::PrimaryEmail(email) => {
+            let email_key = email.trim().to_lowercase();
+            let Some(at) = profile
+                .emails
+                .iter()
+                .position(|e| e.to_lowercase() == email_key)
+            else {
+                return Err(Error::NotFound(format!("address {email} of {}", user.name)));
+            };
+            let primary = profile.emails.remove(at);
+            profile.emails.insert(0, primary);
+        }
+    }
+    drop(owners);
+    match profile == Profile::default() {
+        true => profiles.remove(key.as_str())?,
+        false => profiles.insert(key.as_str(), enc(&profile).as_slice())?,
+    };
+    Ok(())
+}
+
 pub(super) fn set_membership(
     txn: &WriteTransaction,
     group: &str,
@@ -236,6 +321,30 @@ pub(super) fn merge(txn: &WriteTransaction, from: &str, into: &str) -> Result<()
     users.remove(from_key.as_str())?;
     users.insert(into_key.as_str(), enc(&target).as_slice())?;
     drop(users);
+
+    // The profile of `from` joins that of `into`, which wins where both
+    // have a display name and keeps its primary address.
+    let mut profiles = txn.open_table(PROFILES)?;
+    let moved = profiles
+        .remove(from_key.as_str())?
+        .map(|v| v.value().to_vec());
+    if let Some(moved) = moved {
+        let moved: Profile = dec("profiles", &moved)?;
+        let existing = profiles
+            .get(into_key.as_str())?
+            .map(|v| dec::<Profile>("profiles", v.value()))
+            .transpose()?;
+        let mut merged = existing.unwrap_or_default();
+        merged.display_name = merged.display_name.or(moved.display_name);
+        for email in moved.emails {
+            if !merged.emails.iter().any(|e| e.eq_ignore_ascii_case(&email)) {
+                merged.emails.push(email);
+            }
+        }
+        profiles.insert(into_key.as_str(), enc(&merged).as_slice())?;
+    }
+    drop(profiles);
+    rename_values(&mut txn.open_table(EMAIL_OWNERS)?, old, new)?;
     let mut aliases = txn.open_table(ALIASES)?;
     aliases.remove(into_key.as_str())?;
     rename_values(&mut aliases, old, new)?;
@@ -489,6 +598,37 @@ impl Reader {
             .iter()?
             .map(|r| dec("users", r?.1.value()))
             .collect()
+    }
+
+    /// Returns the profile of `user`, empty if they have set nothing. A
+    /// former name finds the profile of the user it became, since history
+    /// keeps the name a change was recorded under.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Db`] or [`Error::CorruptRecord`] if the table cannot be read.
+    pub fn profile_of(&self, user: &str) -> Result<Profile> {
+        let mut key = name_key(user);
+        if let Some(owner) = self.txn().open_table(ALIASES)?.get(key.as_str())? {
+            key = name_key(owner.value());
+        }
+        match self.txn().open_table(PROFILES)?.get(key.as_str())? {
+            Some(v) => dec("profiles", v.value()),
+            None => Ok(Profile::default()),
+        }
+    }
+
+    /// Returns the user that has the address `email`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Db`] if the table cannot be read.
+    pub fn email_owner(&self, email: &str) -> Result<Option<String>> {
+        Ok(self
+            .txn()
+            .open_table(EMAIL_OWNERS)?
+            .get(email.trim().to_lowercase().as_str())?
+            .map(|v| v.value().to_owned()))
     }
 
     /// Returns the user that `name` is a former name of.

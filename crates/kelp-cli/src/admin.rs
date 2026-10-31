@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::bail;
 use kelp_client::{Home, Workspace};
 use kelp_core::DepotPath;
-use kelp_proto::rpc::{ImportInfo, StreamKind};
+use kelp_proto::rpc::{ImportInfo, ProfileChange, StreamKind};
 use kelp_proto::{Reply, Request};
 use kelp_workspace::Config;
 
@@ -186,6 +186,16 @@ pub async fn run(
                 _ => "user",
             };
             println!("{} ({kind})", u.name);
+            if let Some(display_name) = &u.display_name {
+                println!("display name: {display_name}");
+            }
+            // The first address is the primary one.
+            if let Some((primary, others)) = u.emails.split_first() {
+                println!("email: {primary} (primary)");
+                for email in others {
+                    println!("email: {email}");
+                }
+            }
             println!("password: {}", if u.password { "yes" } else { "no" });
             println!(
                 "single sign-on: {}",
@@ -228,6 +238,40 @@ pub async fn run(
                 })
                 .await?;
             println!("Merged {from} into {into}; {from} is now a former name.");
+        }
+        Cmd::User(
+            cmd @ (UserCmd::Name { .. }
+            | UserCmd::AddEmail { .. }
+            | UserCmd::RemoveEmail { .. }
+            | UserCmd::PrimaryEmail { .. }),
+        ) => {
+            let (user, change, done) = match cmd {
+                UserCmd::Name { display_name, user } => {
+                    let done = match &display_name {
+                        Some(n) => format!("Display name set to {n}."),
+                        None => "Display name cleared.".to_owned(),
+                    };
+                    (user, ProfileChange::DisplayName(display_name), done)
+                }
+                UserCmd::AddEmail { email, user } => {
+                    let done = format!("Added {email}.");
+                    (user, ProfileChange::AddEmail(email), done)
+                }
+                UserCmd::RemoveEmail { email, user } => {
+                    let done = format!("Removed {email}.");
+                    (user, ProfileChange::RemoveEmail(email), done)
+                }
+                UserCmd::PrimaryEmail { email, user } => {
+                    let done = format!("{email} is now the primary address.");
+                    (user, ProfileChange::PrimaryEmail(email), done)
+                }
+                _ => unreachable!("matched above"),
+            };
+            connect(home, &server()?)
+                .await?
+                .call(&Request::EditProfile { user, change })
+                .await?;
+            println!("{done}");
         }
         Cmd::Token { user, days } => {
             let conn = connect(home, &server()?).await?;

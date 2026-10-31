@@ -50,7 +50,9 @@ macro_rules! for_each_table {
             VIEW_IMPORTS,
             DISABLED,
             LABELS,
-            MOVES);
+            MOVES,
+            PROFILES,
+            EMAIL_OWNERS);
         done
     }};
     (@each $f:ident, $src:expr, $dst:expr, $done:ident, $($table:ident),*) => {

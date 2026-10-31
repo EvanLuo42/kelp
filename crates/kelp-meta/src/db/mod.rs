@@ -78,6 +78,8 @@ const ALIASES: TableDefinition<&str, &str> = TableDefinition::new("aliases");
 const VIEW_IMPORTS: TableDefinition<(&str, u64), Bytes> = TableDefinition::new("view_imports");
 const DISABLED: TableDefinition<&str, ()> = TableDefinition::new("disabled");
 const LABELS: TableDefinition<&str, Bytes> = TableDefinition::new("labels");
+const PROFILES: TableDefinition<&str, Bytes> = TableDefinition::new("profiles");
+const EMAIL_OWNERS: TableDefinition<&str, &str> = TableDefinition::new("email_owners");
 const MOVES: TableDefinition<(&str, u64), Bytes> = TableDefinition::new("moves");
 
 const LAST_INDEX: &str = "last_index";
@@ -90,7 +92,7 @@ const FORMAT: &str = "format_version";
 /// Logged commands are kept as they were encoded, so a change to
 /// [`Command`] also needs a migration that re-encodes the log; edges only
 /// replicate from a commit server with the same format.
-pub const FORMAT_VERSION: u64 = 8;
+pub const FORMAT_VERSION: u64 = 9;
 
 /// Converts a database from one format version to the next.
 type Migration = fn(&WriteTransaction) -> Result<()>;
@@ -111,6 +113,8 @@ const MIGRATIONS: &[Migration] = &[
     // 7 adds labels, likewise.
     |_| Ok(()),
     // 8 adds the record of moved files, likewise.
+    |_| Ok(()),
+    // 9 adds user profiles and the owners of their addresses, likewise.
     |_| Ok(()),
 ];
 const NEXT_CL: &str = "next_cl";
@@ -218,6 +222,8 @@ impl MetaDb {
         txn.open_table(DISABLED)?;
         txn.open_table(LABELS)?;
         txn.open_table(MOVES)?;
+        txn.open_table(PROFILES)?;
+        txn.open_table(EMAIL_OWNERS)?;
         txn.commit()?;
         Ok(Self { db })
     }

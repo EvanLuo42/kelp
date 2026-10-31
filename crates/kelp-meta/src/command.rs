@@ -350,6 +350,23 @@ pub enum Command {
         cl: ClNumber,
         moves: Vec<(DepotPath, DepotPath)>,
     },
+    /// Changes the display name or the addresses of `user`; see
+    /// [`Profile`](crate::record::Profile).
+    EditProfile { user: String, edit: ProfileEdit },
+}
+
+/// One change to a user's [`Profile`](crate::record::Profile).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProfileEdit {
+    /// Sets the display name, or clears it with `None`.
+    DisplayName(Option<String>),
+    /// Adds an address, which becomes the primary one if it is the first.
+    /// Fails if another user has it.
+    AddEmail(String),
+    /// Removes an address.
+    RemoveEmail(String),
+    /// Moves an address, which the user already has, to the front.
+    PrimaryEmail(String),
 }
 
 impl Command {
@@ -474,6 +491,13 @@ impl Command {
                 None => format!("keep all artifacts {name} of {stream}"),
             },
             Self::Governance(g) => g.summary(),
+            Self::EditProfile { user, edit } => match edit {
+                ProfileEdit::DisplayName(Some(n)) => format!("set display name of {user} to {n}"),
+                ProfileEdit::DisplayName(None) => format!("clear display name of {user}"),
+                ProfileEdit::AddEmail(e) => format!("add address {e} to {user}"),
+                ProfileEdit::RemoveEmail(e) => format!("remove address {e} from {user}"),
+                ProfileEdit::PrimaryEmail(e) => format!("make {e} the primary address of {user}"),
+            },
         }
     }
 }

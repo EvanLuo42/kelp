@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use kelp_meta::Command;
-use kelp_proto::rpc::GroupInfo;
+use kelp_meta::{Command, ProfileEdit};
+use kelp_proto::rpc::{GroupInfo, ProfileChange};
 use kelp_proto::{Auth, ErrorKind, ErrorReply, Reply, Request};
 
 use kelp_meta::record::User;
@@ -353,7 +353,10 @@ fn user_info(
         .sso_link(&user.name)
         .map_err(meta_error)?
         .map(|l| format!("{}@{}", l.subject, l.issuer));
+    let profile = reader.profile_of(&user.name).map_err(meta_error)?;
     Ok(kelp_proto::rpc::UserInfo {
+        display_name: profile.display_name,
+        emails: profile.emails,
         admin: user.admin,
         password: user.password_hash.is_some(),
         replica: user.replica,
@@ -438,6 +441,28 @@ pub(super) async fn set_disabled(
     }
     state
         .commit(access.name(), Command::SetDisabled { user, disabled })
+        .await?;
+    Ok(Reply::Ok)
+}
+
+pub(super) async fn edit_profile(
+    state: &State,
+    access: &Access,
+    user: Option<String>,
+    change: ProfileChange,
+) -> Response {
+    let user = user.unwrap_or_else(|| access.name().to_owned());
+    if !user.eq_ignore_ascii_case(access.name()) {
+        access.require_admin()?;
+    }
+    let edit = match change {
+        ProfileChange::DisplayName(name) => ProfileEdit::DisplayName(name),
+        ProfileChange::AddEmail(email) => ProfileEdit::AddEmail(email),
+        ProfileChange::RemoveEmail(email) => ProfileEdit::RemoveEmail(email),
+        ProfileChange::PrimaryEmail(email) => ProfileEdit::PrimaryEmail(email),
+    };
+    state
+        .commit(access.name(), Command::EditProfile { user, edit })
         .await?;
     Ok(Reply::Ok)
 }

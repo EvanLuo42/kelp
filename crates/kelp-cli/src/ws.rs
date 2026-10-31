@@ -385,7 +385,7 @@ async fn server_query(home: &Home, cwd: &Path, command: Cmd) -> anyhow::Result<(
             for line in &lines {
                 if let std::collections::hash_map::Entry::Vacant(entry) = authors.entry(line.cl) {
                     let author = match conn.call(&Request::Describe { cl: line.cl }).await? {
-                        Reply::Describe(d) => d.summary.author,
+                        Reply::Describe(d) => d.summary.author_name.unwrap_or(d.summary.author),
                         _ => String::new(),
                     };
                     entry.insert(author);
@@ -447,17 +447,22 @@ async fn server_query(home: &Home, cwd: &Path, command: Cmd) -> anyhow::Result<(
             };
             for c in changes {
                 let first_line = c.description.lines().next().unwrap_or_default();
-                println!("change {:<6} by {:<12} {first_line}", c.cl, c.author);
+                let author = c.author_name.as_deref().unwrap_or(&c.author);
+                println!("change {:<6} by {author:<12} {first_line}", c.cl);
             }
         }
         Cmd::Describe { cl } => {
             let Reply::Describe(d) = conn.call(&Request::Describe { cl }).await? else {
                 return Err(unexpected());
             };
-            println!(
-                "change {} on {} by {}\n",
-                d.summary.cl, d.summary.stream, d.summary.author
-            );
+            let s = &d.summary;
+            let author = match (&s.author_name, &s.author_email) {
+                (Some(name), Some(email)) => format!("{name} <{email}> ({})", s.author),
+                (Some(name), None) => format!("{name} ({})", s.author),
+                (None, Some(email)) => format!("{} <{email}>", s.author),
+                (None, None) => s.author.clone(),
+            };
+            println!("change {} on {} by {author}\n", s.cl, s.stream);
             for line in d.summary.description.lines() {
                 println!("    {line}");
             }

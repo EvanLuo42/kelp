@@ -62,9 +62,10 @@ pub async fn run(
                         ""
                     };
                     let title = c.description.lines().next().unwrap_or_default();
+                    let author = c.author_name.as_deref().unwrap_or(&c.author);
                     println!(
-                        "  {:>6}  {:<20} {:<12}{fixes} {title}",
-                        c.cl, c.stream, c.author
+                        "  {:>6}  {:<20} {author:<12}{fixes} {title}",
+                        c.cl, c.stream
                     );
                 }
             }

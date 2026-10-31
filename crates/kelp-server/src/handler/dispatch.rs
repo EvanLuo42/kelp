@@ -35,6 +35,7 @@ pub(super) async fn dispatch(
         | Request::ListUsers
         | Request::SetPassword { .. }
         | Request::SetDisabled { .. }
+        | Request::EditProfile { .. }
         | Request::Logout) => accounts(state, session, access, r).await,
         r @ (Request::SetLabel { .. }
         | Request::DeleteLabel { .. }
@@ -155,6 +156,9 @@ async fn accounts(
         } => account::set_password(state, &access, user, current, password).await,
         Request::SetDisabled { user, disabled } => {
             account::set_disabled(state, &access, user, disabled).await
+        }
+        Request::EditProfile { user, change } => {
+            account::edit_profile(state, &access, user, change).await
         }
         _ => unreachable!("dispatched by area"),
     }

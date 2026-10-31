@@ -8,6 +8,15 @@ The release workflow publishes the section of the tagged version as the GitHub R
 
 ## [Unreleased]
 
+### Added
+
+- A display name and any number of email addresses per user, set with `kelp user name`, `add-email`, `remove-email` and `primary-email`.
+  `changes`, `describe`, `annotate`, reviews and issues show the display name instead of the account name.
+
+### Changed
+
+- The metadata format is now version 9, which adds user profiles; existing databases migrate on open.
+
 ## [0.1.0] - 2026-10-31
 
 The first release.

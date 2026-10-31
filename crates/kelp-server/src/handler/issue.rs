@@ -20,8 +20,8 @@ pub(super) async fn get(state: &Arc<State>, access: Access, key: String) -> Resp
             .map_err(meta_error)?
             .iter()
             .filter(|c| access.sees(&c.stream))
-            .map(summary)
-            .collect();
+            .map(|c| summary(&reader, c))
+            .collect::<Result<_, _>>()?;
         let reached = reader
             .issue_reach(&key)
             .map_err(meta_error)?

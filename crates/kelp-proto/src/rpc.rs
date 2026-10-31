@@ -472,6 +472,13 @@ pub enum Request {
         user: String,
         disabled: bool,
     },
+    /// Changes the display name or addresses of `user`, or of the
+    /// logged-in user if `None`. Anyone may change their own; changing
+    /// another's requires an administrator.
+    EditProfile {
+        user: Option<String>,
+        change: ProfileChange,
+    },
     /// A message between members of a commit group, authenticated by the
     /// group's shared secret rather than a user.
     Raft {
@@ -553,6 +560,7 @@ impl Request {
             | Self::MergeUser { .. }
             | Self::SetPassword { .. }
             | Self::SetDisabled { .. }
+            | Self::EditProfile { .. }
             | Self::Logout
             | Self::SetLabel { .. }
             | Self::DeleteLabel { .. }
@@ -689,9 +697,23 @@ impl Request {
             Self::DeleteStream { .. } => "DeleteStream",
             Self::SetPassword { .. } => "SetPassword",
             Self::SetDisabled { .. } => "SetDisabled",
+            Self::EditProfile { .. } => "EditProfile",
             Self::Raft { .. } => "Raft",
         }
     }
+}
+
+/// One change to a user's display name or addresses.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProfileChange {
+    /// Sets the display name, or clears it with `None`.
+    DisplayName(Option<String>),
+    /// Adds an address; the first one added is the primary one. An address
+    /// belongs to one user only.
+    AddEmail(String),
+    RemoveEmail(String),
+    /// Makes an address the user has the primary one.
+    PrimaryEmail(String),
 }
 
 /// The kinds of message members of a commit group exchange.
@@ -831,6 +853,10 @@ pub struct UserInfo {
     pub aliases: Vec<String>,
     /// Whether the user is disabled.
     pub disabled: bool,
+    /// The name shown instead of `name`, if the user set one.
+    pub display_name: Option<String>,
+    /// The addresses of the user, the primary one first.
+    pub emails: Vec<String>,
 }
 
 /// A commit group as one member sees it.
@@ -957,6 +983,8 @@ pub struct ReviewSummary {
     pub shelf: u64,
     pub stream: String,
     pub author: String,
+    /// The author's display name, if they set one.
+    pub author_name: Option<String>,
     pub description: String,
     /// The latest version.
     pub version: u32,
@@ -1122,6 +1150,10 @@ pub struct ChangeSummary {
     pub cl: u64,
     pub stream: String,
     pub author: String,
+    /// The author's display name, if they set one.
+    pub author_name: Option<String>,
+    /// The author's primary address, if they have one.
+    pub author_email: Option<String>,
     pub description: String,
     /// Milliseconds since the Unix epoch.
     pub submitted_at: u64,
