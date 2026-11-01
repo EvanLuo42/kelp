@@ -12,6 +12,18 @@ It handles engine code, game code and large binary assets, and is engine-agnosti
 
 ## Installation
 
+Prebuilt binaries for Linux and Windows, from the latest release:
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/EvanLuo42/kelp/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/EvanLuo42/kelp/main/install.ps1 | iex
+```
+
+Or with Cargo:
+
 ```console
 $ cargo install kelp-server
 $ cargo install kelp-cli
