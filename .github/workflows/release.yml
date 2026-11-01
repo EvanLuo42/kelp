@@ -79,7 +79,9 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="kelp-$GITHUB_REF_NAME-${{ matrix.target }}"
+          # No version in the name, so install.sh and install.ps1 can use the
+          # stable releases/latest/download/ URL.
+          name="kelp-${{ matrix.target }}"
           ext=""
           [ "$RUNNER_OS" = Windows ] && ext=.exe
           mkdir "$name"
