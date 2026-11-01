@@ -17,6 +17,13 @@ const PARALLEL_PUTS: usize = 16;
 /// memory stays bounded.
 const TRANSFER_CHUNKS: usize = 4096;
 const TRANSFER_BYTES: u64 = 64 << 20;
+/// Files smaller than this are written chunk by chunk on the calling task: the
+/// workers cost more than they save.
+const PARALLEL_MIN_BYTES: u64 = 16 << 20;
+/// The most chunks of a file in flight at a time, which bounds its memory use
+/// to this many maximum-size chunks.
+/// Measured on NVMe: throughput stops improving beyond a handful.
+const MAX_WRITERS: usize = 8;
 
 fn join_error(e: tokio::task::JoinError) -> Error {
     Error::Invalid(format!("cache task failed: {e}"))
@@ -340,13 +347,175 @@ impl ContentCache {
         dest: &Path,
         tmp_dir: &Path,
     ) -> Result<()> {
-        let data = self.read(content).await?;
-        write_file(&data, executable, dest, tmp_dir)
+        self.materialize_metered(content, executable, dest, tmp_dir, None)
+            .await
+    }
+
+    /// Like [`materialize`](Self::materialize), counting the bytes written in
+    /// `meter` as they are.
+    ///
+    /// Chunks are streamed into the temporary file one at a time, so memory
+    /// stays bounded however large the file is. A large file is written by
+    /// several workers, each reading, decompressing, verifying and writing its
+    /// own chunks at their offsets.
+    pub(crate) async fn materialize_metered(
+        &self,
+        content: &ContentId,
+        executable: bool,
+        dest: &Path,
+        tmp_dir: &Path,
+        mut meter: Option<&mut Meter>,
+    ) -> Result<()> {
+        let manifest = self.manifest(content)?.ok_or(Error::NotCached(*content))?;
+        if !manifest.is_consistent() {
+            return Err(Error::Invalid(format!(
+                "cached manifest of {content} is inconsistent"
+            )));
+        }
+        fs::create_dir_all(tmp_dir)?;
+        let mut tmp = TempFile(Some(unique_temp(tmp_dir)));
+        let tmp_path = tmp.path();
+        if manifest.size < PARALLEL_MIN_BYTES || manifest.chunks.len() < 2 {
+            self.assemble_serial(&manifest, &tmp_path, meter.as_deref_mut())
+                .await?;
+        } else {
+            self.assemble_parallel(&manifest, &tmp_path, meter).await?;
+        }
+        crate::fsutil::set_executable(&tmp_path, executable)?;
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        crate::fsutil::set_read_only(dest, false)?;
+        fs::rename(&tmp_path, dest)?;
+        tmp.keep();
+        Ok(())
+    }
+
+    /// Writes the chunks of `manifest` to a new file at `tmp`, in order.
+    async fn assemble_serial(
+        &self,
+        manifest: &FileManifest,
+        tmp: &Path,
+        mut meter: Option<&mut Meter>,
+    ) -> Result<()> {
+        let mut file = fs::File::create(tmp)?;
+        for chunk in &manifest.chunks {
+            let data = self
+                .chunks
+                .get(chunk.id)
+                .await
+                .map_err(|_| Error::NotCached(manifest.content))?;
+            if data.len() != chunk.len as usize {
+                return Err(Error::NotCached(manifest.content));
+            }
+            std::io::Write::write_all(&mut file, &data)?;
+            if let Some(m) = meter.as_deref_mut() {
+                m.add(0, u64::from(chunk.len));
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the chunks of `manifest` to a new file at `tmp`, several at a
+    /// time, each at its own offset.
+    async fn assemble_parallel(
+        &self,
+        manifest: &FileManifest,
+        tmp: &Path,
+        mut meter: Option<&mut Meter>,
+    ) -> Result<()> {
+        let file = Arc::new(fs::File::create(tmp)?);
+        file.set_len(manifest.size)?;
+        let workers = writers();
+        let content = manifest.content;
+        let mut tasks = tokio::task::JoinSet::new();
+        let mut failure = None;
+        let mut offset = 0u64;
+        for chunk in &manifest.chunks {
+            if tasks.len() >= workers
+                && let Some(done) = tasks.join_next().await
+                && settle(done, meter.as_deref_mut(), &mut failure)
+            {
+                break;
+            }
+            let (store, file) = (self.chunks.clone(), file.clone());
+            let (id, len, at) = (chunk.id, chunk.len, offset);
+            offset += u64::from(len);
+            tasks.spawn_blocking(move || {
+                let data = store
+                    .read_chunk(id)
+                    .map_err(|_| Error::NotCached(content))?;
+                if data.len() != len as usize {
+                    return Err(Error::NotCached(content));
+                }
+                crate::fsutil::write_all_at(&file, &data, at)?;
+                Ok(u64::from(len))
+            });
+        }
+        // Workers still hold the file; wait for them before it is removed or
+        // renamed, which Windows refuses while it is open.
+        while let Some(done) = tasks.join_next().await {
+            settle(done, meter.as_deref_mut(), &mut failure);
+        }
+        failure.map_or(Ok(()), Err)
     }
 
     fn manifest_path(&self, content: &ContentId) -> PathBuf {
         let hex = content.to_string();
         self.manifests.join(&hex[..2]).join(hex)
+    }
+}
+
+/// Records the outcome of a chunk write, and returns `true` if it failed.
+///
+/// Only the first failure is kept.
+fn settle(
+    done: std::result::Result<Result<u64>, tokio::task::JoinError>,
+    meter: Option<&mut Meter>,
+    failure: &mut Option<Error>,
+) -> bool {
+    match done.map_err(join_error).and_then(|r| r) {
+        Ok(len) => {
+            if let Some(m) = meter {
+                m.add(0, len);
+            }
+            false
+        }
+        Err(e) => {
+            failure.get_or_insert(e);
+            true
+        }
+    }
+}
+
+/// Returns how many chunks of one file are in flight at a time.
+fn writers() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, |n| n.get() / 2)
+        .clamp(2, MAX_WRITERS)
+}
+
+/// A temporary file that is removed when dropped, unless it was renamed away.
+struct TempFile(Option<PathBuf>);
+
+impl TempFile {
+    fn path(&self) -> PathBuf {
+        self.0
+            .clone()
+            .expect("temporary file is kept until the end")
+    }
+
+    /// Stops removing the file.
+    fn keep(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 

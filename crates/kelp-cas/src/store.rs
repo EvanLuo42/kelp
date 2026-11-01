@@ -140,6 +140,30 @@ impl FsBlobStore {
         crate::pack::sync_dir(path.parent().expect("object path has parent"))
     }
 
+    /// Reads, decompresses and verifies a chunk on the calling thread.
+    ///
+    /// This is [`get`](BlobStore::get) without the hop to the blocking pool,
+    /// for callers that already run on a worker thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotFound`] if the chunk is absent, [`Error::Corrupt`]
+    /// if it does not match its id, or [`Error::Io`] if it cannot be read.
+    pub fn read_chunk(&self, id: ChunkId) -> Result<Bytes> {
+        let compressed = match std::fs::read(self.object_path(id)) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Error::NotFound(id));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let data = decompress(&compressed).map_err(|_| Error::Corrupt(id))?;
+        if ChunkId::of(&data) != id {
+            return Err(Error::Corrupt(id));
+        }
+        Ok(data.into())
+    }
+
     fn object_path(&self, id: ChunkId) -> PathBuf {
         let hex = id.to_string();
         self.root.join(&hex[0..2]).join(&hex[2..4]).join(hex)
@@ -159,22 +183,8 @@ impl BlobStore for FsBlobStore {
     }
 
     async fn get(&self, id: ChunkId) -> Result<Bytes> {
-        let path = self.object_path(id);
-        blocking(move || {
-            let compressed = match std::fs::read(path) {
-                Ok(b) => b,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(Error::NotFound(id));
-                }
-                Err(e) => return Err(e.into()),
-            };
-            let data = decompress(&compressed).map_err(|_| Error::Corrupt(id))?;
-            if ChunkId::of(&data) != id {
-                return Err(Error::Corrupt(id));
-            }
-            Ok(data.into())
-        })
-        .await
+        let store = self.clone();
+        blocking(move || store.read_chunk(id)).await
     }
 
     async fn put(&self, id: ChunkId, data: Bytes) -> Result<()> {

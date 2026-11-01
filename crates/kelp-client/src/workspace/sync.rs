@@ -192,9 +192,10 @@ impl Workspace {
             let bytes = plan.iter().filter_map(|(_, t)| t.map(|t| t.size)).sum();
             let mut meter = cache.meter(Phase::Write, plan.len() as u64, Some(bytes));
             for (path, target) in plan {
-                meter.add(1, target.map_or(0, |t| t.size));
+                let size = target.map_or(0, |t| t.size);
                 let abs = self.local_path(&path)?;
                 if target.is_some() && abs.is_dir() {
+                    meter.add(1, size);
                     report.skipped.push((path, SkipReason::Untracked));
                     continue;
                 }
@@ -203,20 +204,30 @@ impl Workspace {
                     .check_overwrite(&path, target.map(|t| t.content))
                     .is_err()
                 {
+                    meter.add(1, size);
                     report.skipped.push((path, SkipReason::LocallyModified));
                     continue;
                 }
                 match target {
                     Some(t) => {
+                        // The bytes are counted as they are written.
                         cache
-                            .materialize(&t.content, t.executable, &abs, &tmp)
+                            .materialize_metered(
+                                &t.content,
+                                t.executable,
+                                &abs,
+                                &tmp,
+                                Some(&mut meter),
+                            )
                             .await?;
+                        meter.add(1, 0);
                         set_read_only(&abs, self.is_exclusive(&path))?;
                         self.record_have(&path, version(t))?;
                         report.updated.push(path);
                     }
                     None => {
                         remove_file(&abs, &self.root)?;
+                        meter.add(1, 0);
                         self.state.have.remove(&path);
                         report.deleted.push(path);
                     }

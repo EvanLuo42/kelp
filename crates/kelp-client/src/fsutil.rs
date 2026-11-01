@@ -113,6 +113,33 @@ pub(crate) fn set_read_only(path: &Path, read_only: bool) -> std::io::Result<()>
     }
 }
 
+/// Writes all of `buf` to `file` at `offset`, leaving the file position
+/// unspecified so that several threads can write one file.
+#[cfg(unix)]
+pub(crate) fn write_all_at(file: &fs::File, buf: &[u8], offset: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+}
+
+/// Writes all of `buf` to `file` at `offset`, leaving the file position
+/// unspecified so that several threads can write one file.
+#[cfg(windows)]
+pub(crate) fn write_all_at(
+    file: &fs::File,
+    mut buf: &[u8],
+    mut offset: u64,
+) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        let n = file.seek_write(buf, offset)?;
+        if n == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        buf = &buf[n..];
+        offset += n as u64;
+    }
+    Ok(())
+}
+
 /// Returns `true` if `path` exists and is read-only for its owner.
 pub fn is_read_only(path: &Path) -> std::io::Result<bool> {
     Ok(fs::metadata(path)?.permissions().readonly())
