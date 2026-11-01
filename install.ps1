@@ -17,7 +17,8 @@ Installation directory. Asked when omitted in a terminal, otherwise
 %USERPROFILE%\.kelp\bin. Environment: KELP_INSTALL_DIR.
 
 .PARAMETER Version
-Release to install, such as v0.1.1. Default: latest. Environment: KELP_VERSION.
+Release to install, such as v0.1.1, or nightly for the newest main that passed
+CI. Default: latest. Environment: KELP_VERSION.
 
 .PARAMETER NoModifyPath
 Do not add the directory to the user PATH. Environment: KELP_NO_MODIFY_PATH=1.
@@ -92,7 +93,8 @@ if ($env:KELP_BASE_URL) {
 } elseif ($Version -eq 'latest') {
     $base = "https://github.com/$repo/releases/latest/download"
 } else {
-    if ($Version -notmatch '^v') { $Version = "v$Version" }
+    if ($Version -notmatch '^(v|nightly$)') { $Version = "v$Version" }
+    if ($Version -eq 'nightly') { Write-Warning 'nightly is an unreviewed build of the main branch, not a release.' }
     $base = "https://github.com/$repo/releases/download/$Version"
 }
 

@@ -25,7 +25,8 @@ Options:
   -d, --dir <path>         Installation directory; asked when omitted in a
                            terminal, otherwise ~/.local/bin
                            [env: KELP_INSTALL_DIR]
-  -v, --version <tag>      Release to install, such as v0.1.1 [default: latest]
+  -v, --version <tag>      Release to install, such as v0.1.1, or nightly for
+                           the newest main that passed CI [default: latest]
                            [env: KELP_VERSION]
       --no-modify-path     Do not add the directory to PATH in shell profiles
                            [env: KELP_NO_MODIFY_PATH=1]
@@ -163,9 +164,11 @@ elif [ "$version" = latest ]; then
     base="https://github.com/$REPO/releases/latest/download"
 else
     case "$version" in
-    v*) ;;
+    v* | nightly) ;;
     *) version="v$version" ;;
     esac
+    [ "$version" = nightly ] &&
+        say "warning: nightly is an unreviewed build of the main branch, not a release"
     base="https://github.com/$REPO/releases/download/$version"
 fi
 

@@ -28,7 +28,7 @@ Options, or the environment variable next to each of them, skip the questions:
 |---|---|---|
 | `--components all\|cli\|server` | `KELP_COMPONENTS` | what to install |
 | `--dir <path>` | `KELP_INSTALL_DIR` | installation directory |
-| `--version <tag>` | `KELP_VERSION` | a release such as `v0.1.1`, instead of the latest |
+| `--version <tag>` | `KELP_VERSION` | a release such as `v0.1.1`, or `nightly`, instead of the latest |
 | `--no-modify-path` | `KELP_NO_MODIFY_PATH=1` | do not add the directory to `PATH` |
 | `--yes` | `KELP_YES=1` | do not ask questions |
 
@@ -41,6 +41,14 @@ $ curl -fsSL https://raw.githubusercontent.com/EvanLuo42/kelp/main/install.sh | 
 On Linux the script adds the directory to `PATH` in `~/.profile` and the profile of your shell; on Windows it adds it to the user `PATH`.
 The Linux binaries are built on a recent Ubuntu and need a matching glibc.
 Elsewhere, install with Cargo.
+
+## Nightly builds
+
+`--version nightly` installs the newest commit of `main` that passed CI.
+A scheduled workflow builds it once a day, when `main` has changed, and replaces the files of the `nightly` pre-release on GitHub.
+`kelp --version` shows the commit, for example `0.1.0+nightly.20261101.5b6d901`.
+Nightly builds are not reviewed or announced, and may break or lose data; do not use them on a server with data you need.
+Metadata is migrated forward when a database is opened, so going back to a release may not work.
 
 ## With Cargo
 
