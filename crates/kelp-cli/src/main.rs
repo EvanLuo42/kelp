@@ -581,12 +581,26 @@ enum ClCmd {
     },
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Parsing this many subcommands and polling the future of every command
+    // together overflow the 1 MiB main thread stack of Windows in debug
+    // builds, so everything runs on a thread with a larger stack.
+    std::thread::Builder::new()
+        .name("kelp".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Runtime::new()
+                .expect("start the async runtime")
+                .block_on(async_main())
+        })
+        .expect("spawn the main thread")
+        .join()
+        .unwrap_or_else(|_| std::process::exit(101));
+}
+
+async fn async_main() {
     let cli = Cli::parse();
     init_logging(cli.verbose);
-    // The future of every command together is too large for the 1 MiB main
-    // thread stack of Windows in debug builds.
     if let Err(e) = Box::pin(run(cli)).await {
         tracing::debug!("{e:?}");
         eprintln!("error: {e:#}");
