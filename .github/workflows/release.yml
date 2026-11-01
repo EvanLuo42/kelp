@@ -32,7 +32,21 @@ jobs:
           path: notes.md
 
   ci:
-    uses: ./.github/workflows/ci.yml
+    name: Check that CI passed on this commit
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Look for a successful CI run
+        run: |
+          passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+            --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
+          if [ "$passed" -eq 0 ]; then
+            echo "::error::CI has not passed on $GITHUB_SHA; push the commit to a branch and wait for it first"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   publish:
     name: Publish to crates.io
@@ -42,8 +56,33 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      # Publishes only the crates that are not on crates.io yet, so a failed
+      # run can be re-run. crates.io limits how many new crates can be published
+      # in a short time (HTTP 429), so wait and retry while crates are left.
       - name: Publish
-        run: cargo publish --workspace --exclude kelp-testkit --locked
+        run: |
+          set -o pipefail
+          for attempt in $(seq 1 15); do
+            args=()
+            while read -r name version; do
+              status=$(curl -s -o /dev/null -w '%{http_code}' \
+                -A "kelp-release (https://github.com/$GITHUB_REPOSITORY)" \
+                "https://crates.io/api/v1/crates/$name/$version")
+              [ "$status" = 200 ] || args+=(-p "$name")
+            done < <(cargo metadata --format-version 1 --no-deps \
+              | jq -r '.packages[] | select(.name != "kelp-testkit") | "\(.name) \(.version)"')
+            if [ ${#args[@]} -eq 0 ]; then
+              echo "Everything is published"
+              exit 0
+            fi
+            echo "Publishing: ${args[*]}"
+            if ! cargo publish --locked "${args[@]}" 2>&1 | tee publish.log; then
+              grep -q '429' publish.log || exit 1
+              sleep 600
+            fi
+          done
+          echo "::error::some crates are still not published"
+          exit 1
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
