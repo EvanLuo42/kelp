@@ -1,0 +1,84 @@
+# Builds release binaries of kelp, kelpd and kelp-server for Linux and Windows
+# and uploads one archive per platform as the artifact dist-<target>. Used by
+# the release and nightly workflows.
+
+name: Build binaries
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to build; the workflow's own by default.
+        type: string
+        default: ""
+      nightly:
+        description: Append +nightly.<date>.<commit> to the version.
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build binaries (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Build metadata does not change which versions the kelp-* dependencies
+      # match, so only the workspace version needs to change. The lock file
+      # records the version, so a nightly build cannot use --locked.
+      - name: Stamp the version
+        if: inputs.nightly
+        shell: bash
+        run: |
+          stamp="nightly.$(date -u +%Y%m%d).$(git rev-parse --short=7 HEAD)"
+          sed -i -E "s/^version = \"([^\"+]+)\"/version = \"\1+$stamp\"/" Cargo.toml
+          grep -n '^version = ' Cargo.toml
+      - name: Build
+        shell: bash
+        run: |
+          locked=--locked
+          [ "${{ inputs.nightly }}" = true ] && locked=""
+          cargo build --release $locked -p kelp-cli -p kelp-server
+      - name: Check that the binaries run
+        shell: bash
+        run: |
+          ext=""
+          [ "$RUNNER_OS" = Windows ] && ext=.exe
+          for bin in kelp kelpd kelp-server; do
+            "target/release/$bin$ext" --version
+          done
+      - name: Package
+        shell: bash
+        run: |
+          # No version in the name, so install.sh and install.ps1 can use the
+          # stable releases/latest/download/ URL.
+          name="kelp-${{ matrix.target }}"
+          ext=""
+          [ "$RUNNER_OS" = Windows ] && ext=.exe
+          mkdir "$name"
+          for bin in kelp kelpd kelp-server; do
+            cp "target/release/$bin$ext" "$name/"
+          done
+          cp README.md LICENSE-APACHE LICENSE-MIT "$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$name.zip" "$name" > /dev/null
+            echo "asset=$name.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "$name.tar.gz" "$name"
+            echo "asset=$name.tar.gz" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: ${{ env.asset }}

@@ -52,54 +52,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   build:
-    name: Build binaries (${{ matrix.target }})
+    name: Build binaries
     needs: [prepare, ci]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked -p kelp-cli -p kelp-server
-      - name: Check that the binaries run
-        shell: bash
-        run: |
-          ext=""
-          [ "$RUNNER_OS" = Windows ] && ext=.exe
-          for bin in kelp kelpd kelp-server; do
-            "target/release/$bin$ext" --version
-          done
-      - name: Package
-        shell: bash
-        run: |
-          # No version in the name, so install.sh and install.ps1 can use the
-          # stable releases/latest/download/ URL.
-          name="kelp-${{ matrix.target }}"
-          ext=""
-          [ "$RUNNER_OS" = Windows ] && ext=.exe
-          mkdir "$name"
-          for bin in kelp kelpd kelp-server; do
-            cp "target/release/$bin$ext" "$name/"
-          done
-          cp README.md LICENSE-APACHE LICENSE-MIT "$name/"
-          if [ "$RUNNER_OS" = Windows ]; then
-            7z a "$name.zip" "$name" > /dev/null
-            echo "asset=$name.zip" >> "$GITHUB_ENV"
-          else
-            tar czf "$name.tar.gz" "$name"
-            echo "asset=$name.tar.gz" >> "$GITHUB_ENV"
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.target }}
-          path: ${{ env.asset }}
+    uses: ./.github/workflows/build-binaries.yml
 
   publish:
     name: Publish to crates.io

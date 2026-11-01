@@ -1,0 +1,94 @@
+# Publishes release builds of the newest main commit that passed CI to the
+# pre-release "nightly", replacing the previous ones. Skipped while main has
+# not changed since the last nightly. Install it with
+# `install.sh --version nightly`.
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  check:
+    name: Find the commit to build
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.main.outputs.sha }}
+      build: ${{ steps.main.outputs.build }}
+    steps:
+      - id: main
+        run: |
+          branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$branch" --jq .sha)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+            --commit "$sha" --status success --json databaseId --jq length)
+          last=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+          if [ "$passed" -eq 0 ]; then
+            echo "::notice::CI has not passed on $sha; nothing to build"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          elif [ "$last" = "$sha" ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then
+            echo "::notice::main has not changed since the last nightly"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    name: Build binaries
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    uses: ./.github/workflows/build-binaries.yml
+    with:
+      ref: ${{ needs.check.outputs.sha }}
+      nightly: true
+
+  publish:
+    name: Update the nightly release
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        run: |
+          sha=${{ needs.check.outputs.sha }}
+          (cd dist && sha256sum * > SHA256SUMS)
+          # Move the tag first; the release then belongs to the new commit.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" \
+              -f sha="$sha" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref=refs/tags/nightly -f sha="$sha" > /dev/null
+          fi
+          notes="An unreviewed build of the main branch at ${sha::7}, built $(date -u +%Y-%m-%d).
+          It passed CI but is not a release; it may break or lose data.
+          Install it with \`install.sh --version nightly\`."
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload nightly dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit nightly --repo "$GITHUB_REPOSITORY" \
+              --title "Nightly (${sha::7})" --notes "$notes" --prerelease --latest=false
+          else
+            gh release create nightly dist/* --repo "$GITHUB_REPOSITORY" \
+              --title "Nightly (${sha::7})" --notes "$notes" --prerelease --verify-tag
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
