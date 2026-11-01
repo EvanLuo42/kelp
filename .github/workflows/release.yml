@@ -1,6 +1,9 @@
-# Publishes a release when a tag such as v0.2.0 is pushed. Before tagging,
-# set the version in Cargo.toml (the workspace version and every kelp-*
-# workspace dependency) and give the version a section in CHANGELOG.md.
+# Publishes a release when a tag such as v0.2.0 is pushed: the crates go to
+# crates.io, and the GitHub Release gets release builds of kelp, kelpd and
+# kelp-server for Linux and Windows. Before tagging, set the version in
+# Cargo.toml (the workspace version and every kelp-* workspace dependency),
+# give the version a section in CHANGELOG.md and wait for CI to pass on the
+# commit to tag.
 #
 # Needs a CARGO_REGISTRY_TOKEN secret in the crates-io environment.
 
@@ -48,6 +51,54 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  build:
+    name: Build binaries (${{ matrix.target }})
+    needs: [prepare, ci]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p kelp-cli -p kelp-server
+      - name: Check that the binaries run
+        shell: bash
+        run: |
+          ext=""
+          [ "$RUNNER_OS" = Windows ] && ext=.exe
+          for bin in kelp kelpd kelp-server; do
+            "target/release/$bin$ext" --version
+          done
+      - name: Package
+        shell: bash
+        run: |
+          name="kelp-$GITHUB_REF_NAME-${{ matrix.target }}"
+          ext=""
+          [ "$RUNNER_OS" = Windows ] && ext=.exe
+          mkdir "$name"
+          for bin in kelp kelpd kelp-server; do
+            cp "target/release/$bin$ext" "$name/"
+          done
+          cp README.md LICENSE-APACHE LICENSE-MIT "$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$name.zip" "$name" > /dev/null
+            echo "asset=$name.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "$name.tar.gz" "$name"
+            echo "asset=$name.tar.gz" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: ${{ env.asset }}
+
   publish:
     name: Publish to crates.io
     needs: [prepare, ci]
@@ -88,7 +139,7 @@ jobs:
 
   release:
     name: Create the GitHub Release
-    needs: publish
+    needs: [publish, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -96,12 +147,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: notes
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
       - name: Create the release
         run: |
+          (cd dist && sha256sum * > SHA256SUMS)
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --notes-file notes.md \
-            --verify-tag
+            --verify-tag \
+            dist/*
         env:
           GH_TOKEN: ${{ github.token }}
