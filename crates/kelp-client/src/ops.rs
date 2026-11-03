@@ -15,7 +15,7 @@ use kelp_workspace::{META_DIR, OpenAction, Snapshot};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::progress::{Progress, Quiet};
+use crate::progress::{Meter, Phase, Progress, Quiet};
 use crate::{
     CleanReport, Connection, Error, FileDiff, FileReport, Home, MergeReport, Projector,
     ResolveMode, ResolveOutcome, Result, SnapshotSide, Status, SyncReport, Workspace,
@@ -23,6 +23,8 @@ use crate::{
 
 const LOCK_WAIT: Duration = Duration::from_secs(60);
 const LOCK_POLL: Duration = Duration::from_millis(50);
+/// How long to wait for the workspace lock before saying so.
+const LOCK_NOTICE: Duration = Duration::from_millis(500);
 
 /// A workspace operation. Paths are absolute file system paths.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,19 +289,21 @@ impl Session {
             _ => {}
         }
         let root = Workspace::discover(cwd)?.root().to_owned();
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(root.join(META_DIR).join("lock"))?;
-        let mut lock = fd_lock::RwLock::new(file);
+        let mut lock = workspace_lock(&root)?;
         let mut waited = Duration::ZERO;
+        let mut waiting = None;
         while lock.try_write().is_err() {
             if waited >= LOCK_WAIT {
                 return Err(Error::Busy);
             }
+            if waited >= LOCK_NOTICE && waiting.is_none() {
+                waiting = Some(Meter::start(progress.clone(), Phase::Wait, 1, None));
+            }
             tokio::time::sleep(LOCK_POLL).await;
             waited += LOCK_POLL;
+        }
+        if let Some(mut meter) = waiting {
+            meter.add(1, 0);
         }
         let _guard = lock.try_write().map_err(|_| Error::Busy)?;
         let mut ws = Workspace::open(&root)?;
@@ -348,11 +352,10 @@ impl Session {
                     .collect::<Result<Vec<_>>>()?;
                 Outcome::Synced(ws.sync_paths(&conn, &cache, at, &filter).await?)
             }
-            Op::Status => Outcome::Status {
-                status: ws.status()?,
-                changelists: changelists(ws),
-                have_cl: ws.state().have_cl,
-            },
+            Op::Status => {
+                let status = ws.refresh_status(None)?;
+                status_outcome(ws, status)
+            }
             Op::Reconcile => Outcome::Opened(ws.reconcile(&self.connection(&server).await?).await?),
             Op::Open { paths, action, cl } => {
                 let depot = ws.expand(&paths, action == OpenAction::Add)?;
@@ -546,6 +549,29 @@ impl Session {
             Op::Ping | Op::Shutdown | Op::Mount { .. } | Op::Unmount => Outcome::Done,
         })
     }
+}
+
+/// Runs `f` holding the lock that [`Session::execute`] takes on the workspace
+/// at `root`, or returns `None` at once if another operation holds it.
+///
+/// # Errors
+///
+/// Returns an error if the lock file cannot be opened.
+pub fn if_unlocked<T>(root: &Path, f: impl FnOnce() -> T) -> Result<Option<T>> {
+    let mut lock = workspace_lock(root)?;
+    let Ok(_guard) = lock.try_write() else {
+        return Ok(None);
+    };
+    Ok(Some(f()))
+}
+
+fn workspace_lock(root: &Path) -> Result<fd_lock::RwLock<std::fs::File>> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(META_DIR).join("lock"))?;
+    Ok(fd_lock::RwLock::new(file))
 }
 
 fn single(ws: &Workspace, path: PathBuf) -> Result<DepotPath> {

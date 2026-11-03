@@ -210,6 +210,10 @@ async fn execute(
 }
 
 /// Answers status from the workspace's watched index, without listing the disk.
+///
+/// Unless another operation holds the workspace, the status also records
+/// the files that hashing found unchanged, so the next one need not hash
+/// them again; otherwise it only reads.
 async fn status(
     daemon: &Arc<Daemon>,
     cwd: &std::path::Path,
@@ -217,7 +221,17 @@ async fn status(
     let ws = kelp_client::Workspace::discover(cwd)?;
     let daemon = daemon.clone();
     tokio::task::spawn_blocking(move || {
-        let status = match daemon.watchers.index(&ws) {
+        let index = daemon.watchers.index(&ws);
+        let refreshed = kelp_client::ops::if_unlocked(ws.root(), || {
+            // Read the state again now that no operation can change it.
+            let mut ws = kelp_client::Workspace::open(ws.root())?;
+            let status = ws.refresh_status(index.as_ref())?;
+            Ok::<_, kelp_client::Error>(kelp_client::ops::status_outcome(&ws, status))
+        })?;
+        if let Some(outcome) = refreshed {
+            return outcome;
+        }
+        let status = match index {
             Some(index) => ws.status_indexed(&index)?,
             None => ws.status()?,
         };

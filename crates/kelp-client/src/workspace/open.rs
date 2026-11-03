@@ -18,7 +18,7 @@ impl Workspace {
     /// taken, or the state cannot be saved.
     pub async fn reconcile(&mut self, conn: &Connection) -> Result<Vec<(DepotPath, OpenAction)>> {
         self.refresh_typemap(conn).await?;
-        let status = self.status()?;
+        let status = self.refresh_status(None)?;
         let opened: Vec<(DepotPath, OpenAction)> = [
             (status.modified, OpenAction::Edit),
             (status.added, OpenAction::Add),

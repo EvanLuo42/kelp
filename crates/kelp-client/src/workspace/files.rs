@@ -4,6 +4,7 @@ use kelp_core::{ContentId, DepotPath};
 
 use super::{FileDiff, Workspace, stream_relative};
 use crate::fsutil::{remove_file, set_read_only};
+use crate::progress::Phase;
 use crate::{Connection, ContentCache, Error, Result};
 
 /// What [`Workspace::clean`] did, or would do.
@@ -86,7 +87,7 @@ impl Workspace {
         filter: &[DepotPath],
         dry_run: bool,
     ) -> Result<CleanReport> {
-        let status = self.status()?;
+        let status = self.refresh_status(None)?;
         let mut report = CleanReport {
             restored: status
                 .modified
@@ -111,10 +112,12 @@ impl Workspace {
             .collect();
         cache.fetch(conn, &synced).await?;
         let tmp = self.tmp_dir();
+        let mut meter = cache.meter(Phase::Write, report.restored.len() as u64, None);
         for path in &report.restored {
             let have = self
                 .have_version(path)
                 .ok_or_else(|| Error::Invalid(format!("{path} was never synced")))?;
+            meter.add(1, have.size);
             let abs = self.local_path(path)?;
             if abs.exists() {
                 set_read_only(&abs, false)?;

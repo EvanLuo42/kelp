@@ -12,6 +12,49 @@ async fn submit(ws: &mut Workspace, conn: &Connection, client: &TestClient) -> u
 }
 
 #[tokio::test]
+async fn status_remembers_files_it_hashed_unchanged() {
+    let server = TestServer::start().await;
+    server.create_depot("game").await;
+    let conn = server.add_user("alice").await;
+    let client = TestClient::new();
+    let mut ws = client.create_workspace(&server, "ws", &depot_path("//game/main"));
+    client.sandbox().write("ws/a.txt", "same");
+    submit(&mut ws, &conn, &client).await;
+
+    // Touched, as by a build tool rewriting the same bytes.
+    let abs = client.sandbox().path("ws/a.txt");
+    let touched = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&abs)
+        .unwrap()
+        .set_modified(touched)
+        .unwrap();
+    let a = depot_path("//game/main/a.txt");
+    let disk = std::fs::metadata(&abs)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    assert_ne!(ws.state().have[&a].mtime, disk);
+
+    let status = ws.refresh_status(None).unwrap();
+    assert!(!status.has_unopened_changes(), "{status:?}");
+    let reopened = Workspace::open(ws.root()).unwrap();
+    assert_eq!(
+        reopened.state().have[&a].mtime,
+        disk,
+        "the next status trusts the time instead of hashing"
+    );
+
+    client.sandbox().write("ws/a.txt", "diff");
+    let status = ws.refresh_status(None).unwrap();
+    assert_eq!(status.modified, vec![a]);
+}
+
+#[tokio::test]
 async fn diff_shows_opened_and_unopened_changes() {
     let server = TestServer::start().await;
     server.create_depot("game").await;

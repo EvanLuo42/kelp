@@ -399,16 +399,24 @@ async fn server_query(home: &Home, cwd: &Path, command: Cmd) -> anyhow::Result<(
                 true => kelp_core::DepotPath::parse(&path)?,
                 false => ws.depot_path_of(&cwd.join(&path))?,
             };
-            let lines = kelp_client::annotate(&conn, &home.cache(), &depot).await?;
+            let lines = kelp_client::annotate(&conn, &crate::progress::cache(home), &depot).await?;
+            // One round trip per changelist adds up; make them all at once.
+            let cls: std::collections::BTreeSet<u64> = lines.iter().map(|l| l.cl).collect();
+            let mut describes = tokio::task::JoinSet::new();
+            for cl in cls {
+                let conn = conn.clone();
+                describes.spawn(async move { (cl, conn.call(&Request::Describe { cl }).await) });
+            }
             let mut authors = std::collections::HashMap::new();
+            while let Some(done) = describes.join_next().await {
+                let (cl, reply) = done?;
+                let author = match reply? {
+                    Reply::Describe(d) => d.summary.author_name.unwrap_or(d.summary.author),
+                    _ => String::new(),
+                };
+                authors.insert(cl, author);
+            }
             for line in &lines {
-                if let std::collections::hash_map::Entry::Vacant(entry) = authors.entry(line.cl) {
-                    let author = match conn.call(&Request::Describe { cl: line.cl }).await? {
-                        Reply::Describe(d) => d.summary.author_name.unwrap_or(d.summary.author),
-                        _ => String::new(),
-                    };
-                    entry.insert(author);
-                }
                 print!("{:>6} {:<12} {}", line.cl, authors[&line.cl], line.text);
             }
         }
@@ -432,7 +440,8 @@ async fn server_query(home: &Home, cwd: &Path, command: Cmd) -> anyhow::Result<(
                 true => kelp_core::DepotPath::parse(spec)?,
                 false => ws.depot_path_of(&cwd.join(spec))?,
             };
-            let bytes = kelp_client::read_file(&conn, &home.cache(), &depot, at).await?;
+            let bytes =
+                kelp_client::read_file(&conn, &crate::progress::cache(home), &depot, at).await?;
             use std::io::Write;
             std::io::stdout().write_all(&bytes)?;
         }

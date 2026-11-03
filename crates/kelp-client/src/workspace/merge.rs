@@ -4,6 +4,7 @@ use kelp_workspace::{OpenAction, Resolve, ResolveKind};
 
 use super::{Workspace, version};
 use crate::fsutil::remove_file;
+use crate::progress::Phase;
 use crate::{Connection, ContentCache, Error, Result};
 
 /// The outcome of [`Workspace::merge`].
@@ -255,7 +256,10 @@ impl Workspace {
             .collect();
         cache.fetch(conn, &contents).await?;
         let tmp = self.tmp_dir();
+        let bytes = copies.iter().filter_map(|(_, t)| t.map(|t| t.size)).sum();
+        let mut meter = cache.meter(Phase::Write, copies.len() as u64, Some(bytes));
         for (path, theirs) in copies {
+            meter.add(1, theirs.map_or(0, |t| t.size));
             let abs = self.local_path(&path)?;
             let tracked = self.state.have.contains_key(&path);
             let action = match theirs {

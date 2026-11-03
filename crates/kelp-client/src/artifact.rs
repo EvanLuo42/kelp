@@ -14,6 +14,7 @@ use kelp_proto::{Reply, Request};
 use tokio::task::JoinSet;
 
 use crate::fsutil::is_executable;
+use crate::progress::Phase;
 use crate::workspace::PARALLEL_INGESTS;
 use crate::{Connection, ContentCache, Error, Result};
 
@@ -68,13 +69,15 @@ pub async fn publish(
 
     let mut ingests = JoinSet::new();
     let mut manifests: Vec<Option<(FileManifest, bool)>> = vec![None; paths.len()];
+    let mut meter = cache.meter(Phase::Read, paths.len() as u64, None);
     for (i, (_, abs)) in paths.iter().enumerate() {
         if ingests.len() >= PARALLEL_INGESTS {
-            let (j, done) = ingests
+            let (j, done): (_, (FileManifest, _)) = ingests
                 .join_next()
                 .await
                 .expect("ingests are pending")
                 .map_err(join_error)??;
+            meter.add(1, done.0.size);
             manifests[j] = Some(done);
         }
         let (cache, abs) = (cache.clone(), abs.clone());
@@ -86,6 +89,7 @@ pub async fn publish(
     }
     while let Some(done) = ingests.join_next().await {
         let (j, done) = done.map_err(join_error)??;
+        meter.add(1, done.0.size);
         manifests[j] = Some(done);
     }
     let manifests: Vec<_> = manifests
@@ -216,7 +220,10 @@ pub async fn fetch(
     cache.fetch(conn, &contents).await?;
     std::fs::create_dir_all(dest)?;
     let tmp = crate::cache::unique_temp(dest);
+    let bytes = files.iter().map(|(_, f)| f.size).sum();
+    let mut meter = cache.meter(Phase::Write, files.len() as u64, Some(bytes));
     for (rel, file) in &files {
+        meter.add(1, file.size);
         cache
             .materialize(&file.content, file.executable, &dest.join(rel), &tmp)
             .await?;

@@ -7,6 +7,7 @@ use kelp_workspace::{ArtifactHave, ArtifactMount};
 use super::{Workspace, version};
 use crate::artifact::{self, ArtifactQuery};
 use crate::fsutil::{remove_file, set_read_only};
+use crate::progress::Phase;
 use crate::{Connection, ContentCache, Error, Result};
 
 /// What sync did to one of the workspace's artifact directories.
@@ -136,7 +137,10 @@ impl Workspace {
             }
         }
         let tmp = self.tmp_dir();
+        let bytes = changed.iter().map(|(_, f)| f.size).sum();
+        let mut meter = cache.meter(Phase::Write, changed.len() as u64, Some(bytes));
         for (rel, f) in changed {
+            meter.add(1, f.size);
             let abs = dir.join(rel);
             cache
                 .materialize(&f.content, f.executable, &abs, &tmp)

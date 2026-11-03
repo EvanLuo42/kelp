@@ -101,9 +101,17 @@ pub async fn run(
             let stream = stream()?;
             let tags: BTreeMap<_, _> = tags.into_iter().collect();
             let dir = cwd.join(dir);
-            let id = artifact::publish(&conn, &home.cache(), &stream, cl, &name, &tags, &dir)
-                .await
-                .with_context(|| format!("publishing {}", dir.display()))?;
+            let id = artifact::publish(
+                &conn,
+                &crate::progress::cache(home),
+                &stream,
+                cl,
+                &name,
+                &tags,
+                &dir,
+            )
+            .await
+            .with_context(|| format!("publishing {}", dir.display()))?;
             println!("Published artifact {id}: {name} of {stream}@{cl}.");
         }
         ArtifactCmd::List {
@@ -133,7 +141,8 @@ pub async fn run(
             }
         }
         ArtifactCmd::Get { id, dir } => {
-            let files = artifact::fetch(&conn, &home.cache(), id, &cwd.join(&dir)).await?;
+            let files =
+                artifact::fetch(&conn, &crate::progress::cache(home), id, &cwd.join(&dir)).await?;
             println!("Wrote {} files to {}.", files.len(), dir.display());
         }
         ArtifactCmd::Pin { id, unpin } => {

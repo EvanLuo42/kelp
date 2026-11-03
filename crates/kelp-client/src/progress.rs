@@ -17,6 +17,8 @@ const INTERVAL: Duration = Duration::from_millis(100);
 /// A stage of a long operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Phase {
+    /// Waiting for another operation on the workspace to finish; one item.
+    Wait,
     /// Comparing files with the workspace and looking up what to fetch.
     Scan,
     /// Downloading chunks into the local cache.
@@ -33,6 +35,7 @@ impl Phase {
     /// Returns a short lowercase name for display.
     pub fn name(self) -> &'static str {
         match self {
+            Phase::Wait => "waiting",
             Phase::Scan => "scanning",
             Phase::Download => "downloading",
             Phase::Write => "writing",

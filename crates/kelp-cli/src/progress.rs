@@ -1,11 +1,12 @@
 //! Progress bars for long workspace operations.
 
 use std::io::IsTerminal;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use indicatif::{HumanBytes, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use kelp_client::progress::{Phase, Progress, Update};
+use kelp_client::{ContentCache, Home};
 
 /// Draws a bar for the current phase on standard error, if it is a terminal.
 pub struct Bars {
@@ -55,14 +56,32 @@ impl Progress for Bars {
     }
 }
 
+impl Drop for Bars {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+/// Returns the user's content cache, drawing bars for its transfers until
+/// the last clone of it is dropped.
+pub fn cache(home: &Home) -> ContentCache {
+    home.cache().with_progress(Arc::new(Bars::new()))
+}
+
 fn bar(phase: Phase, total: u64) -> ProgressBar {
     let unit = match phase {
         Phase::Download | Phase::Upload => "chunks",
         Phase::Scan | Phase::Write | Phase::Read => "files",
+        Phase::Wait => "",
     };
-    let template = format!(
-        "{{prefix:>11}} [{{bar:30}}] {{human_pos}}/{{human_len}} {unit}  {{msg}}  {{elapsed}}"
-    );
+    let template = match phase {
+        Phase::Wait => {
+            "{prefix:>11} for another Kelp command in this workspace to finish  {elapsed}".into()
+        }
+        _ => format!(
+            "{{prefix:>11}} [{{bar:30}}] {{human_pos}}/{{human_len}} {unit}  {{msg}}  {{elapsed}}"
+        ),
+    };
     let style = ProgressStyle::with_template(&template)
         .expect("valid template")
         .progress_chars("=> ");

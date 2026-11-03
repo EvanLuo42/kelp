@@ -315,7 +315,7 @@ impl Workspace {
     ///
     /// Returns an error if the workspace cannot be read.
     pub fn status(&self) -> Result<Status> {
-        self.status_of(self.walk_entries("")?)
+        Ok(self.status_of(self.walk_entries("")?)?.0)
     }
 
     /// Compares an index of the disk with what the workspace has and has
@@ -325,10 +325,41 @@ impl Workspace {
     ///
     /// Returns an error if a file whose metadata changed cannot be hashed.
     pub fn status_indexed(&self, index: &crate::DiskIndex) -> Result<Status> {
-        self.status_of(index.entries().map(|(l, e)| (l.to_owned(), *e)).collect())
+        Ok(self.status_of(index_entries(index))?.0)
     }
 
-    fn status_of(&self, files: Vec<(String, DiskEntry)>) -> Result<Status> {
+    /// Like [`status`](Self::status), or [`status_indexed`](Self::status_indexed)
+    /// given an `index`, and records the modification times of files that
+    /// hashing found unchanged, so that later statuses need not hash them
+    /// again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace cannot be read or its state written.
+    pub fn refresh_status(&mut self, index: Option<&crate::DiskIndex>) -> Result<Status> {
+        let files = match index {
+            Some(index) => index_entries(index),
+            None => self.walk_entries("")?,
+        };
+        let (status, unchanged) = self.status_of(files)?;
+        if !unchanged.is_empty() {
+            for (path, mtime) in unchanged {
+                if let Some(have) = self.state.have.get_mut(&path) {
+                    have.mtime = mtime;
+                }
+            }
+            self.save()?;
+        }
+        Ok(status)
+    }
+
+    /// Returns the status of `files`, and the tracked files among them that
+    /// had to be hashed and are unchanged, with the modification times to
+    /// trust for them from now on.
+    fn status_of(
+        &self,
+        files: Vec<(String, DiskEntry)>,
+    ) -> Result<(Status, Vec<(DepotPath, u64)>)> {
         let mut status = Status {
             opened: self
                 .state
@@ -340,6 +371,7 @@ impl Workspace {
             ..Status::default()
         };
         let mut seen = BTreeSet::new();
+        let mut unchanged = Vec::new();
         for (local, entry) in files {
             let Some(path) = self.view.to_depot(&local) else {
                 continue;
@@ -352,6 +384,9 @@ impl Workspace {
                 Some(h) if !entry_matches(&self.abs(&local), h, entry)? => {
                     status.modified.push(path)
                 }
+                Some(h) if h.mtime != entry.mtime && !racy(entry.mtime) => {
+                    unchanged.push((path, entry.mtime))
+                }
                 Some(_) => {}
                 None => status.added.push(path),
             }
@@ -361,7 +396,7 @@ impl Workspace {
                 status.deleted.push(path.clone());
             }
         }
-        Ok(status)
+        Ok((status, unchanged))
     }
 
     /// Fetches the depot's typemap from the server.
@@ -557,6 +592,10 @@ impl Workspace {
             executable: h.executable,
         })
     }
+}
+
+fn index_entries(index: &crate::DiskIndex) -> Vec<(String, DiskEntry)> {
+    index.entries().map(|(l, e)| (l.to_owned(), *e)).collect()
 }
 
 fn parse_typemap(source: Option<&str>) -> Result<Option<Typemap>> {

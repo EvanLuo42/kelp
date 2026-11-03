@@ -6,6 +6,7 @@ use kelp_workspace::{FileVersion, OpenAction, Snapshot, SnapshotFile};
 
 use super::Workspace;
 use crate::fsutil::{is_executable, remove_file, set_read_only};
+use crate::progress::Phase;
 use crate::{Connection, ContentCache, Error, Result};
 
 /// One side of a snapshot comparison.
@@ -93,7 +94,9 @@ impl Workspace {
         automatic: bool,
     ) -> Result<Option<u32>> {
         let mut by_cl: BTreeMap<LocalClId, Vec<SnapshotFile>> = BTreeMap::new();
+        let mut meter = cache.meter(Phase::Read, paths.len() as u64, None);
         for path in paths {
+            meter.add(1, 0);
             let (Some(action), Some(cl)) = (
                 self.state.pending.action(path),
                 self.state.pending.owner(path),
@@ -186,7 +189,14 @@ impl Workspace {
         } else {
             LocalClId::DEFAULT
         };
+        let bytes = snapshot
+            .files
+            .iter()
+            .filter_map(|f| f.content.map(|v| v.size))
+            .sum();
+        let mut meter = cache.meter(Phase::Write, snapshot.files.len() as u64, Some(bytes));
         for file in &snapshot.files {
+            meter.add(1, file.content.map_or(0, |v| v.size));
             let abs = self.local_path(&file.path)?;
             match file.content {
                 Some(v) => {
