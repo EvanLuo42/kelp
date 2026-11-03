@@ -178,7 +178,7 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 archive="kelp-$target.tar.gz"
 say "Downloading $archive ($version)"
 download "$base/$archive" "$tmp/$archive" ||
-    err "could not download $base/$archive (is there a release for $target?)"
+    err "could not download $base/$archive (does this release have a build for $target? try --version nightly)"
 
 if download "$base/SHA256SUMS" "$tmp/SHA256SUMS" 2>/dev/null; then
     expected=$(awk -v f="$archive" '$2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")

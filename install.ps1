@@ -104,7 +104,7 @@ try {
     $archive = "kelp-$target.zip"
     Write-Host "Downloading $archive ($Version)"
     & curl.exe -fsSL -o "$tmp\$archive" "$base/$archive"
-    if ($LASTEXITCODE -ne 0) { throw "Could not download $base/$archive (is there a release for $target?)." }
+    if ($LASTEXITCODE -ne 0) { throw "Could not download $base/$archive (does the $Version release have a build for ${target}? try -Version nightly)." }
 
     & curl.exe -fsL -o "$tmp\SHA256SUMS" "$base/SHA256SUMS"
     if ($LASTEXITCODE -eq 0) {
