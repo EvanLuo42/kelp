@@ -11,7 +11,8 @@ use kelp_workspace::Config;
 
 use crate::daemon;
 use crate::util::{
-    LoginMethod, connect, link_sso, login, pick_server, read_password, unexpected, workspace_name,
+    LoginMethod, connect, link_sso, login, notice, pick_server, read_password, unexpected,
+    workspace_name,
 };
 use crate::{Cmd, DepotCmd, DocCmd, GroupCmd, Kind, LabelCmd, StreamCmd, TotpCmd, UserCmd};
 use kelp_client::ops::Op;
@@ -336,6 +337,7 @@ pub async fn run(
             }
         }
         Cmd::Gc { dry_run } => {
+            notice("Collecting garbage; this can take a while...");
             let Reply::Gc(r) = connect(home, &server()?)
                 .await?
                 .call(&Request::Gc { dry_run })
@@ -359,6 +361,7 @@ pub async fn run(
             dest,
             metadata_only,
         } => {
+            notice("Backing up; this can take a while...");
             let Reply::BackedUp {
                 log_index,
                 chunks_copied,
@@ -379,6 +382,7 @@ pub async fn run(
             );
         }
         Cmd::Fsck { deep } => {
+            notice("Checking the server's data; this can take a while...");
             let Reply::Fsck(r) = connect(home, &server()?)
                 .await?
                 .call(&Request::Fsck { deep })
@@ -410,6 +414,7 @@ pub async fn run(
         }
         Cmd::Relocate { to, from } => relocate(home, cwd, &to, from).await?,
         Cmd::Tier => {
+            notice("Moving chunks to cold storage; this can take a while...");
             let Reply::Tiered { chunks, bytes } = connect(home, &server()?)
                 .await?
                 .call(&Request::Tier)

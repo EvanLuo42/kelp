@@ -104,6 +104,14 @@ async fn sso_login(conn: &Connection, link: bool) -> anyhow::Result<(String, Str
     bail!("the login was not approved in time")
 }
 
+/// Tells the user on a terminal what a step with no progress bar is doing, so
+/// a long wait does not look like a hang.
+pub fn notice(message: &str) {
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        eprintln!("{message}");
+    }
+}
+
 /// The error for a reply of the wrong kind, which in practice means the
 /// client and server are different versions of Kelp.
 pub fn unexpected() -> anyhow::Error {

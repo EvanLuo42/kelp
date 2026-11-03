@@ -214,9 +214,13 @@ impl ContentCache {
     pub async fn fetch(&self, conn: &Connection, contents: &[ContentId]) -> Result<()> {
         let mut missing_manifests = Vec::new();
         let mut manifests = Vec::new();
+        let mut scan = self.meter(Phase::Scan, contents.len() as u64, None);
         for content in contents {
             match self.manifest(content)? {
-                Some(m) => manifests.push(m),
+                Some(m) => {
+                    manifests.push(m);
+                    scan.add(1, 0);
+                }
                 None => missing_manifests.push(*content),
             }
         }
@@ -239,6 +243,7 @@ impl ContentCache {
                 }
                 self.put_manifest(&manifest)?;
                 manifests.push(manifest);
+                scan.add(1, 0);
             }
         }
 

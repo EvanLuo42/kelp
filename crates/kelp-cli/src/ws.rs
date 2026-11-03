@@ -10,7 +10,9 @@ use kelp_core::{DepotPath, LocalClId};
 use kelp_proto::{Reply, Request};
 use kelp_workspace::OpenAction;
 
-use crate::util::{action_name, connect, file_action, parse_cl, parse_cl_or_default, unexpected};
+use crate::util::{
+    action_name, connect, file_action, notice, parse_cl, parse_cl_or_default, unexpected,
+};
 use crate::{Accept, ClCmd, Cmd, SnapshotCmd, daemon};
 
 pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyhow::Result<()> {
@@ -35,16 +37,24 @@ pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyh
                     None => paths.push(cwd.join(target)),
                 }
             }
+            // The server lookups before the first progress bar cannot show one.
+            notice("Checking for changes...");
             Op::SyncTo { rev, paths }
         }
         Cmd::Status => Op::Status,
         Cmd::Fstat { paths } => Op::Inspect { paths: abs(paths) },
         Cmd::Diff { paths } => Op::Diff { paths: abs(paths) },
-        Cmd::Clean { paths, dry_run } => Op::Clean {
-            paths: abs(paths),
-            dry_run,
-        },
-        Cmd::Reconcile => Op::Reconcile,
+        Cmd::Clean { paths, dry_run } => {
+            notice("Scanning the workspace...");
+            Op::Clean {
+                paths: abs(paths),
+                dry_run,
+            }
+        }
+        Cmd::Reconcile => {
+            notice("Scanning the workspace...");
+            Op::Reconcile
+        }
         Cmd::Add { paths, cl } => open(abs(paths), OpenAction::Add, cl)?,
         Cmd::Edit { paths, cl } => open(abs(paths), OpenAction::Edit, cl)?,
         Cmd::Delete { paths, cl } => open(abs(paths), OpenAction::Delete, cl)?,
@@ -82,11 +92,14 @@ pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyh
                 path: cwd.join(path),
             },
         },
-        Cmd::Submit { cl, message, fixes } => Op::Submit {
-            cl: parse_cl_or_default(cl.as_deref())?,
-            message,
-            fixes,
-        },
+        Cmd::Submit { cl, message, fixes } => {
+            notice("Preparing to submit...");
+            Op::Submit {
+                cl: parse_cl_or_default(cl.as_deref())?,
+                message,
+                fixes,
+            }
+        }
         Cmd::Shelve { cl } => Op::Shelve {
             cl: parse_cl_or_default(cl.as_deref())?,
         },
@@ -94,13 +107,19 @@ pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyh
             shelf,
             cl: cl.as_deref().map(parse_cl).transpose()?,
         },
-        Cmd::Merge { from, cl: None } => Op::Merge {
-            from: from.as_deref().map(DepotPath::parse).transpose()?,
-        },
-        Cmd::Merge { from, cl: Some(cl) } => Op::Pick {
-            from: from.as_deref().map(DepotPath::parse).transpose()?,
-            cl,
-        },
+        Cmd::Merge { from, cl: None } => {
+            notice("Merging...");
+            Op::Merge {
+                from: from.as_deref().map(DepotPath::parse).transpose()?,
+            }
+        }
+        Cmd::Merge { from, cl: Some(cl) } => {
+            notice("Merging...");
+            Op::Pick {
+                from: from.as_deref().map(DepotPath::parse).transpose()?,
+                cl,
+            }
+        }
         Cmd::Undo { cl } => Op::Undo { cl },
         Cmd::Unlock { paths, force } => Op::Unlock {
             paths: abs(paths),

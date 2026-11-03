@@ -102,7 +102,9 @@ impl Workspace {
             ..SyncReport::default()
         };
         let mut plan = Vec::new();
+        let mut scan = cache.meter(Phase::Scan, targets.len() as u64, None);
         for (path, target) in targets {
+            scan.add(1, 0);
             let Some(local) = self.view.map(&path) else {
                 continue;
             };

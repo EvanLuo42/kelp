@@ -58,7 +58,7 @@ impl Progress for Bars {
 fn bar(phase: Phase, total: u64) -> ProgressBar {
     let unit = match phase {
         Phase::Download | Phase::Upload => "chunks",
-        Phase::Write | Phase::Read => "files",
+        Phase::Scan | Phase::Write | Phase::Read => "files",
     };
     let template = format!(
         "{{prefix:>11}} [{{bar:30}}] {{human_pos}}/{{human_len}} {unit}  {{msg}}  {{elapsed}}"
