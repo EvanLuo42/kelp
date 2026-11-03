@@ -126,6 +126,13 @@ impl Config {
         }
     }
 
+    /// Returns `true` if `root` holds a workspace configuration. A bare
+    /// [`META_DIR`] is not enough: the installer puts Kelp itself in
+    /// `~/.kelp`, which would make the home directory look like a workspace.
+    pub fn exists(root: &Path) -> bool {
+        meta_path(root, CONFIG_FILE).is_file()
+    }
+
     /// Reads the configuration of the workspace rooted at `root`.
     ///
     /// # Errors

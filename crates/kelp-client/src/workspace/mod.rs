@@ -169,7 +169,7 @@ impl Workspace {
         })?;
         let root = dir
             .ancestors()
-            .find(|d| d.join(META_DIR).is_dir())
+            .find(|d| Config::exists(d))
             .ok_or(Error::NoWorkspace)?;
         Self::open(root)
     }
