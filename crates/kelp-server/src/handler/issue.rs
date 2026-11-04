@@ -51,7 +51,7 @@ pub(super) async fn link(
         .map_err(meta_error)?
         .filter(|c| access.sees(&c.stream))
         .ok_or_else(|| not_found(format!("change {cl}")))?;
-    if !access.is_admin() && !change.author.eq_ignore_ascii_case(access.name()) {
+    if !access.administers(&change.stream) && !change.author.eq_ignore_ascii_case(access.name()) {
         return Err(ErrorReply::new(
             ErrorKind::Forbidden,
             format!("change {cl} belongs to {}", change.author),

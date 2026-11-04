@@ -12,7 +12,7 @@ use super::{Access, Response, blocking, meta_error, not_found, parse_path};
 use crate::State;
 
 pub(super) async fn create_depot(state: &State, access: &Access, name: String) -> Response {
-    access.require_admin()?;
+    access.require_administers(&parse_path(&format!("//{name}"))?)?;
     let at = state.clock.now();
     let main = Command::CreateStream {
         path: parse_path(&format!("//{name}/main"))?,
@@ -36,7 +36,7 @@ pub(super) async fn set_typemap(
     depot: String,
     source: String,
 ) -> Response {
-    access.require_admin()?;
+    access.require_administers(&parse_path(&format!("//{depot}"))?)?;
     let cmd = Command::SetTypemap {
         depot,
         source,
@@ -71,12 +71,17 @@ pub(super) async fn set_imports(
     stream: String,
     imports: Vec<ImportInfo>,
 ) -> Response {
-    access.require_admin()?;
+    let target = parse_path(&stream)?;
+    access.require_administers(&target)?;
     let imports = imports
         .into_iter()
         .map(|i| {
             Ok(Import {
-                source: parse_path(&i.source)?,
+                source: {
+                    let source = parse_path(&i.source)?;
+                    access.require_stream(&source)?;
+                    source
+                },
                 from: i.from,
                 to: i.to,
                 at: i.at.map(ClNumber),
@@ -85,7 +90,7 @@ pub(super) async fn set_imports(
         })
         .collect::<Result<_, ErrorReply>>()?;
     let cmd = Command::SetImports {
-        stream: parse_path(&stream)?,
+        stream: target,
         imports,
     };
     state.commit(access.name(), cmd).await?;
@@ -101,7 +106,7 @@ pub(super) async fn delete_stream(state: &State, access: &Access, stream: String
         .map_err(meta_error)?
         .ok_or_else(|| not_found(format!("stream {path}")))?;
     if record.kind != StreamKind::Task {
-        access.require_admin()?;
+        access.require_administers(&path)?;
     }
     state
         .commit(access.name(), Command::DeleteStream { path })
@@ -109,7 +114,7 @@ pub(super) async fn delete_stream(state: &State, access: &Access, stream: String
     Ok(Reply::Ok)
 }
 
-/// Creates a stream. Administrators create any kind; other users who can
+/// Creates a stream. Administrators of the stream create any kind; other users who can
 /// see the parent may create task streams.
 pub(super) async fn create_stream(
     state: &State,
@@ -120,19 +125,20 @@ pub(super) async fn create_stream(
 ) -> Response {
     let kind = meta_kind(kind);
     let parent = parent.as_deref().map(parse_path).transpose()?;
-    if !access.is_admin() {
+    let path = parse_path(&path)?;
+    if !access.administers(&path) {
         match (&parent, kind) {
             (Some(p), StreamKind::Task) => access.require_stream(p)?,
             _ => {
                 return Err(ErrorReply::new(
                     ErrorKind::Forbidden,
-                    "only administrators create this kind of stream",
+                    format!("only administrators of {path} create this kind of stream"),
                 ));
             }
         }
     }
     let cmd = Command::CreateStream {
-        path: parse_path(&path)?,
+        path,
         kind,
         parent,
         at: state.clock.now(),

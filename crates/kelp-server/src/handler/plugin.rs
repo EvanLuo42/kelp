@@ -18,7 +18,7 @@ pub(super) async fn register(
     content: ContentId,
     size: u64,
 ) -> Response {
-    access.require_admin()?;
+    access.require_role(kelp_meta::acl::Role::Integrations)?;
     let wasm = read_content(state, &content).await?;
     let plugin = state.plugins.load(content, &wasm)?;
     let cmd = Governance::RegisterPlugin {
@@ -40,7 +40,7 @@ pub(super) async fn delete(
     name: String,
     version: String,
 ) -> Response {
-    access.require_admin()?;
+    access.require_role(kelp_meta::acl::Role::Integrations)?;
     state
         .commit(access.name(), Governance::DeletePlugin { name, version })
         .await?;

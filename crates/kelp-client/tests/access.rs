@@ -126,3 +126,69 @@ async fn service_accounts_use_issued_tokens() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn depot_administrators_and_roles_hold_part_of_the_powers() {
+    let server = TestServer::start().await;
+    server.create_depot("game").await;
+    server.create_depot("engine").await;
+    let (lead, it) = (server.add_user("lead").await, server.add_user("it").await);
+    let table = "write * //...\nadmin user:lead //game/...\nrole accounts user:it\n";
+    server
+        .admin(Request::SetProtections {
+            source: table.into(),
+        })
+        .await;
+    let forbidden = |r: Result<Reply, Error>| {
+        assert!(
+            matches!(r, Err(Error::Remote(ref e)) if e.kind == ErrorKind::Forbidden),
+            "{r:?}"
+        );
+    };
+    let dev = |depot: &str| Request::CreateStream {
+        path: format!("//{depot}/dev"),
+        kind: kelp_proto::rpc::StreamKind::Development,
+        parent: Some(format!("//{depot}/main")),
+    };
+    lead.call(&dev("game")).await.unwrap();
+    forbidden(lead.call(&dev("engine")).await);
+    forbidden(it.call(&dev("game")).await);
+    forbidden(
+        lead.call(&Request::CreateDepot {
+            name: "tools".into(),
+        })
+        .await,
+    );
+    lead.call(&Request::SetTypemap {
+        depot: "game".into(),
+        source: String::new(),
+    })
+    .await
+    .unwrap();
+    forbidden(lead.call(&Request::ListUsers).await);
+    forbidden(lead.call(&Request::Gc { dry_run: true }).await);
+
+    it.call(&Request::ListUsers).await.unwrap();
+    let user = |name: &str, admin| Request::CreateUser {
+        name: name.into(),
+        password: Some(PASSWORD.into()),
+        admin,
+        replica: false,
+    };
+    it.call(&user("carol", false)).await.unwrap();
+    forbidden(it.call(&user("root2", true)).await);
+    let reset = |name: &str| Request::SetPassword {
+        user: Some(name.into()),
+        current: None,
+        password: "a new password".into(),
+    };
+    it.call(&reset("carol")).await.unwrap();
+    forbidden(it.call(&reset(kelp_testkit::net::ADMIN)).await);
+    forbidden(it.call(&Request::GetProtections).await);
+    forbidden(
+        it.call(&Request::SetProtections {
+            source: "write * //...\n".into(),
+        })
+        .await,
+    );
+}

@@ -234,7 +234,7 @@ pub(super) async fn release_locks(
 ) -> Response {
     let holder = match force {
         true => {
-            access.require_admin()?;
+            access.require_administers(&parse_path(&stream)?)?;
             None
         }
         false => Some(LockHolder {
@@ -355,7 +355,7 @@ pub(super) async fn delete_shelf(state: &State, access: &Access, cl: u64) -> Res
         .shelf(ClNumber(cl))
         .map_err(meta_error)?
         .ok_or_else(not_found)?;
-    if shelf.contents.owner != access.name() && !access.is_admin() {
+    if shelf.contents.owner != access.name() && !access.administers(&shelf.contents.stream) {
         return Err(ErrorReply::new(
             ErrorKind::Forbidden,
             format!("shelf {cl} belongs to someone else"),

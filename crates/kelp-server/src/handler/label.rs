@@ -80,7 +80,10 @@ pub(super) fn list(state: &State, access: &Access) -> Response {
 /// Checks that the user may move or delete `existing`.
 fn may_change(access: &Access, existing: Option<Label>) -> Result<(), ErrorReply> {
     match existing {
-        Some(label) if !access.is_admin() && !label.owner.eq_ignore_ascii_case(access.name()) => {
+        Some(label)
+            if !access.administers(&label.stream)
+                && !label.owner.eq_ignore_ascii_case(access.name()) =>
+        {
             Err(ErrorReply::new(
                 ErrorKind::Forbidden,
                 format!("label {} belongs to {}", label.name, label.owner),

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use kelp_client::Connection;
 use kelp_core::DepotPath;
-use kelp_meta::acl::{Level, Protections, Subject};
+use kelp_meta::acl::{Level, Protections, Role, Subject};
 use kelp_meta::db::Reader;
 use kelp_meta::record::User;
 use kelp_proto::io::{expect_frame_within, write_message};
@@ -167,6 +167,60 @@ impl Access {
             false => Err(ErrorReply::new(
                 ErrorKind::Forbidden,
                 "administrator required",
+            )),
+        }
+    }
+
+    /// Returns `true` if the user is a server administrator or a `role` line
+    /// grants them `role`.
+    fn has_role(&self, role: Role) -> bool {
+        self.user.admin || self.table.has_role(self.subject(), role)
+    }
+
+    fn require_role(&self, role: Role) -> Result<(), ErrorReply> {
+        match self.has_role(role) {
+            true => Ok(()),
+            false => Err(ErrorReply::new(
+                ErrorKind::Forbidden,
+                format!("administrator or the {role} role required"),
+            )),
+        }
+    }
+
+    /// Requires the accounts role for managing `target`. Server
+    /// administrators and replicas are managed only by server
+    /// administrators, so the role cannot be used to gain their powers.
+    fn require_accounts_over(&self, reader: &Reader, target: &str) -> Result<(), ErrorReply> {
+        if self.user.admin {
+            return Ok(());
+        }
+        self.require_role(Role::Accounts)?;
+        let current = reader
+            .alias(target)
+            .map_err(meta_error)?
+            .unwrap_or_else(|| target.to_owned());
+        match reader.user(&current).map_err(meta_error)? {
+            Some(u) if u.admin || u.replica => Err(ErrorReply::new(
+                ErrorKind::Forbidden,
+                format!("{target} is a server administrator or replica; ask an administrator"),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Returns `true` if the user administers the directory `dir`, such as a
+    /// depot or a stream: as a server administrator, or through an `admin`
+    /// line that covers all of it.
+    fn administers(&self, dir: &DepotPath) -> bool {
+        self.user.admin || self.table.dir_level(self.subject(), dir) == Level::Admin
+    }
+
+    fn require_administers(&self, dir: &DepotPath) -> Result<(), ErrorReply> {
+        match self.administers(dir) {
+            true => Ok(()),
+            false => Err(ErrorReply::new(
+                ErrorKind::Forbidden,
+                format!("administrator of {dir} required"),
             )),
         }
     }

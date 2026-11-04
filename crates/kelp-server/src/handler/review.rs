@@ -89,7 +89,7 @@ pub(super) async fn report_status(
 
 pub(super) async fn close(state: &State, access: &Access, shelf: u64) -> Response {
     let review = load(state, access, shelf)?;
-    if !access.is_admin() && !review.author.eq_ignore_ascii_case(access.name()) {
+    if !access.administers(&review.stream) && !review.author.eq_ignore_ascii_case(access.name()) {
         return Err(ErrorReply::new(
             ErrorKind::Forbidden,
             format!("review {shelf} belongs to {}", review.author),

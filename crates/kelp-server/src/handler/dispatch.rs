@@ -277,7 +277,7 @@ async fn changes(state: &Arc<State>, access: Access, request: Request) -> Respon
 async fn admin(state: &Arc<State>, access: Access, request: Request) -> Response {
     match request {
         Request::ClusterStatus => {
-            access.require_admin()?;
+            access.require_role(kelp_meta::acl::Role::Operations)?;
             let cluster = state.cluster().ok_or_else(|| {
                 ErrorReply::new(ErrorKind::Invalid, "this server is not in a commit group")
             })?;

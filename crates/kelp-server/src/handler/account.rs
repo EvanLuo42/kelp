@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use kelp_meta::acl::Role;
 use kelp_meta::{Command, ProfileEdit};
 use kelp_proto::rpc::{GroupInfo, ProfileChange};
 use kelp_proto::{Auth, ErrorKind, ErrorReply, Reply, Request};
@@ -292,7 +293,7 @@ pub(super) async fn expect_sso(
     user: String,
     sso_name: Option<String>,
 ) -> Response {
-    access.require_admin()?;
+    access.require_accounts_over(&state.reader()?, &user)?;
     state
         .commit(access.name(), Command::ExpectSso { user, sso_name })
         .await?;
@@ -300,7 +301,7 @@ pub(super) async fn expect_sso(
 }
 
 pub(super) async fn unlink_sso(state: &State, access: &Access, user: String) -> Response {
-    access.require_admin()?;
+    access.require_accounts_over(&state.reader()?, &user)?;
     state
         .commit(access.name(), Command::UnlinkSso { user })
         .await?;
@@ -313,7 +314,10 @@ pub(super) async fn merge_user(
     from: String,
     into: String,
 ) -> Response {
-    access.require_admin()?;
+    let reader = state.reader()?;
+    access.require_accounts_over(&reader, &from)?;
+    access.require_accounts_over(&reader, &into)?;
+    drop(reader);
     state
         .commit(access.name(), Command::MergeUser { from, into })
         .await?;
@@ -321,7 +325,7 @@ pub(super) async fn merge_user(
 }
 
 pub(super) fn get_user(state: &State, access: &Access, name: String) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Accounts)?;
     let reader = state.reader()?;
     let current = match reader.alias(&name).map_err(meta_error)? {
         Some(current) => current,
@@ -335,7 +339,7 @@ pub(super) fn get_user(state: &State, access: &Access, name: String) -> Response
 }
 
 pub(super) fn list_users(state: &State, access: &Access) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Accounts)?;
     let reader = state.reader()?;
     let users = reader.users().map_err(meta_error)?;
     let infos = users
@@ -380,7 +384,7 @@ pub(super) async fn set_password(
     let target = user.unwrap_or_else(|| access.name().to_owned());
     let own = target.eq_ignore_ascii_case(access.name());
     if !own {
-        access.require_admin()?;
+        access.require_accounts_over(&state.reader()?, &target)?;
     }
     if password.len() < 8 {
         return Err(ErrorReply::new(
@@ -432,7 +436,7 @@ pub(super) async fn set_disabled(
     user: String,
     disabled: bool,
 ) -> Response {
-    access.require_admin()?;
+    access.require_accounts_over(&state.reader()?, &user)?;
     if disabled && user.eq_ignore_ascii_case(access.name()) {
         return Err(ErrorReply::new(
             ErrorKind::Invalid,
@@ -453,7 +457,7 @@ pub(super) async fn edit_profile(
 ) -> Response {
     let user = user.unwrap_or_else(|| access.name().to_owned());
     if !user.eq_ignore_ascii_case(access.name()) {
-        access.require_admin()?;
+        access.require_accounts_over(&state.reader()?, &user)?;
     }
     let edit = match change {
         ProfileChange::DisplayName(name) => ProfileEdit::DisplayName(name),
@@ -517,7 +521,7 @@ pub(super) async fn totp_disable(
 ) -> Response {
     let name = user.unwrap_or_else(|| access.name().to_owned());
     if !name.eq_ignore_ascii_case(access.name()) || code.is_none() {
-        access.require_admin()?;
+        access.require_accounts_over(&state.reader()?, &name)?;
     } else if let (Some(secret), Some(code)) = (&access.user.totp, &code) {
         check_code(state, &name, secret, code)?;
     }
@@ -556,7 +560,10 @@ pub(super) async fn create_user(
     admin: bool,
     replica: bool,
 ) -> Response {
-    access.require_admin()?;
+    match admin || replica {
+        true => access.require_admin()?,
+        false => access.require_role(Role::Accounts)?,
+    }
     let password_hash = blocking(move || Ok(password.as_deref().map(auth::hash_password))).await?;
     let cmd = Command::CreateUser {
         name,
@@ -575,7 +582,7 @@ pub(super) async fn issue_token(
     user: String,
     ttl_days: u32,
 ) -> Response {
-    access.require_admin()?;
+    access.require_accounts_over(&state.reader()?, &user)?;
     if !(1..=MAX_TOKEN_DAYS).contains(&ttl_days) {
         return Err(ErrorReply::new(
             ErrorKind::Invalid,
@@ -621,7 +628,7 @@ pub(super) async fn set_group(
     name: String,
     members: Vec<String>,
 ) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Accounts)?;
     state
         .commit(access.name(), Command::SetGroup { name, members })
         .await?;
@@ -642,7 +649,7 @@ pub(super) fn list_groups(state: &State) -> Response {
 }
 
 pub(super) fn get_protections(state: &State, access: &Access) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Audit)?;
     Ok(Reply::Text(
         state.reader()?.protections_source().map_err(meta_error)?,
     ))

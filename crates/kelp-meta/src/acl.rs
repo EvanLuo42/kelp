@@ -8,10 +8,21 @@
 //! none   user:bob       //game/main/Secret/...
 //! ```
 //!
-//! `level` is `none`, `read` or `write`; `who` is `*`, `user:<name>` or
-//! `group:<name>`; `path` is a depot path, ending in `...` to cover a whole
-//! directory. For a given user and path the last matching line wins, and a
-//! path no line matches is inaccessible. Administrators bypass the table.
+//! `level` is `none`, `read`, `write` or `admin`; `who` is `*`,
+//! `user:<name>` or `group:<name>`; `path` is a depot path, ending in `...`
+//! to cover a whole directory. For a given user and path the last matching
+//! line wins, and a path no line matches is inaccessible. Administrators
+//! bypass the table.
+//!
+//! `admin` includes `write` and makes the user an administrator of the
+//! depots, streams and files the line covers. Lines of the form
+//! `role <role> who` grant a part of a server administrator's powers
+//! everywhere:
+//!
+//! ```text
+//! admin  group:leads    //game/...
+//! role   accounts       group:it
+//! ```
 
 use kelp_core::DepotPath;
 
@@ -23,6 +34,55 @@ pub enum Level {
     None,
     Read,
     Write,
+    /// Writing, and administering what the line covers: creating and
+    /// deleting streams, obliterating files, releasing anyone's locks and
+    /// managing artifacts, typemaps and imports.
+    Admin,
+}
+
+/// A part of a server administrator's powers, granted with a `role` line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Role {
+    /// Managing users, groups, tokens and single sign-on links, except for
+    /// server administrators.
+    Accounts,
+    /// Garbage collection, tiering, checks, backups and the commit group's
+    /// status.
+    Operations,
+    /// Reading the audit log and the protections table.
+    Audit,
+    /// Managing webhooks and plugins.
+    Integrations,
+}
+
+impl Role {
+    /// Every role, in the order they are documented.
+    pub const ALL: [Self; 4] = [
+        Self::Accounts,
+        Self::Operations,
+        Self::Audit,
+        Self::Integrations,
+    ];
+
+    /// Returns the name used in a `role` line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Accounts => "accounts",
+            Self::Operations => "operations",
+            Self::Audit => "audit",
+            Self::Integrations => "integrations",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.name() == s)
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 /// Who a line of a rules table applies to: `*`, `user:<name>` or
@@ -117,10 +177,17 @@ struct Rule {
     path: PathPattern,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Grant {
+    role: Role,
+    who: Who,
+}
+
 /// A parsed protections table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Protections {
     rules: Vec<Rule>,
+    grants: Vec<Grant>,
 }
 
 /// The identity a permission check is made for.
@@ -160,6 +227,7 @@ impl Protections {
     /// ```
     pub fn parse(src: &str) -> Result<Self> {
         let mut rules = Vec::new();
+        let mut grants = Vec::new();
         for line in src
             .lines()
             .map(str::trim)
@@ -167,23 +235,86 @@ impl Protections {
         {
             let bad = |why: &str| Error::Invalid(format!("protections line {line:?}: {why}"));
             let mut parts = line.split_whitespace();
-            let (Some(level), Some(who), Some(path), None) =
+            let (Some(level), Some(second), Some(third), None) =
                 (parts.next(), parts.next(), parts.next(), parts.next())
             else {
-                return Err(bad("expected `level who path`"));
+                return Err(bad("expected `level who path` or `role <role> who`"));
+            };
+            let who_of = |s: &str| {
+                Who::parse(s).ok_or_else(|| bad("who must be *, user:<name> or group:<name>"))
             };
             let level = match level {
                 "none" => Level::None,
                 "read" => Level::Read,
                 "write" => Level::Write,
-                _ => return Err(bad("level must be none, read or write")),
+                "admin" => Level::Admin,
+                "role" => {
+                    let names: Vec<&str> = Role::ALL.iter().map(|r| r.name()).collect();
+                    let role = Role::parse(second)
+                        .ok_or_else(|| bad(&format!("role must be one of {}", names.join(", "))))?;
+                    grants.push(Grant {
+                        role,
+                        who: who_of(third)?,
+                    });
+                    continue;
+                }
+                _ => return Err(bad("level must be none, read, write, admin or role")),
             };
-            let who =
-                Who::parse(who).ok_or_else(|| bad("who must be *, user:<name> or group:<name>"))?;
-            let path = PathPattern::parse(path).map_err(|e| bad(&e))?;
+            let who = who_of(second)?;
+            let path = PathPattern::parse(third).map_err(|e| bad(&e))?;
             rules.push(Rule { level, who, path });
         }
-        Ok(Self { rules })
+        Ok(Self { rules, grants })
+    }
+
+    /// Returns `true` if a `role` line grants `role` to `subject`.
+    pub fn has_role(&self, subject: Subject<'_>, role: Role) -> bool {
+        self.grants
+            .iter()
+            .any(|g| g.role == role && g.who.includes(subject))
+    }
+
+    /// Returns the roles `role` lines grant to `subject`.
+    pub fn roles(&self, subject: Subject<'_>) -> Vec<Role> {
+        Role::ALL
+            .into_iter()
+            .filter(|r| self.has_role(subject, *r))
+            .collect()
+    }
+
+    /// Returns the access level of `subject` on the whole directory `dir`:
+    /// that of the last line covering every file below it.
+    ///
+    /// Lines for single files or subdirectories below `dir` are not
+    /// considered, so an `admin` level here administers the directory as a
+    /// whole, such as a depot or a stream.
+    pub fn dir_level(&self, subject: Subject<'_>, dir: &DepotPath) -> Level {
+        let prefix = format!("{}/", dir.key());
+        self.rules
+            .iter()
+            .rev()
+            .find(|r| {
+                r.who.includes(subject) && r.path.recursive && prefix.starts_with(&r.path.key)
+            })
+            .map_or(Level::None, |r| r.level)
+    }
+
+    /// Returns `true` if `subject` may read every path: no line that applies
+    /// to them takes read access away after the last one that grants it on
+    /// `//...`.
+    pub fn reads_everything(&self, subject: Subject<'_>) -> bool {
+        let applies: Vec<&Rule> = self
+            .rules
+            .iter()
+            .filter(|r| r.who.includes(subject))
+            .collect();
+        let Some(last_all) = applies
+            .iter()
+            .rposition(|r| r.path.recursive && r.path.key.is_empty())
+        else {
+            return false;
+        };
+        applies[last_all..].iter().all(|r| r.level >= Level::Read)
     }
 
     /// Returns the access level of `subject` on the file `path`.
