@@ -100,6 +100,8 @@ async fn start_session(state: &State, session: &Session, user: User) -> Response
         state.token_ttl.as_millis() as u64,
     )
     .await?;
+    // The session ends when this token is revoked.
+    session.set_token(Some(token.clone()));
     let reply = Reply::Token {
         token,
         user: user.name.clone(),

@@ -51,12 +51,36 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    fn user(&self) -> Result<User, ErrorReply> {
-        self.user
-            .lock()
-            .expect("session lock")
-            .clone()
-            .ok_or_else(|| ErrorReply::new(ErrorKind::Unauthenticated, "log in first"))
+    /// Returns the session's user as `reader` has it now.
+    ///
+    /// The session holds on to the token it logged in with and checks it on
+    /// every request, so revoking the token (by logging out elsewhere,
+    /// linking single sign-on, merging the user away and the like) ends the
+    /// session too, and changes to the user take effect at once.
+    fn current_user(&self, state: &State, reader: &Reader) -> Result<User, ErrorReply> {
+        let token = self.token.lock().expect("session lock").clone();
+        let logged_in = self.user.lock().expect("session lock").is_some();
+        let (Some(token), true) = (token, logged_in) else {
+            return Err(ErrorReply::new(ErrorKind::Unauthenticated, "log in first"));
+        };
+        let ended = |why: &str| {
+            self.set_user(None);
+            ErrorReply::new(
+                ErrorKind::Unauthenticated,
+                format!("{why}; log in again"),
+            )
+        };
+        let record = reader
+            .token(&auth::token_hash(&token))
+            .map_err(internal)?
+            .filter(|t| t.expires_at > state.clock.now())
+            .ok_or_else(|| ended("the session's token was revoked or has expired"))?;
+        let user = reader
+            .user(&record.user)
+            .map_err(internal)?
+            .ok_or_else(|| ended("the session's user no longer exists"))?;
+        self.set_user(Some(user.clone()));
+        Ok(user)
     }
 
     fn set_user(&self, user: Option<User>) {
@@ -445,7 +469,11 @@ async fn handle_once(
             _ => unreachable!("matched above"),
         };
     }
-    let user = session.user()?;
+    let access = {
+        let reader = state.reader()?;
+        let user = session.current_user(state, &reader)?;
+        Access::load(&reader, user)?
+    };
     let forwarded = matches!(
         request.class(),
         RequestClass::Write | RequestClass::Upload | RequestClass::Authoritative
@@ -454,9 +482,15 @@ async fn handle_once(
         && forwarded
     {
         let conn = session.upstream(to).await?;
-        return edge::forward(state, to, &conn, request, recv).await;
+        let link = matches!(request, Request::OidcLink { .. });
+        let reply = edge::forward(state, to, &conn, request, recv).await;
+        // Linking revokes the user's tokens and logs the upstream session
+        // in with a new one, which this session needs as well.
+        if let (true, Ok(Reply::Token { token, .. })) = (link, &reply) {
+            session.set_token(Some(token.clone()));
+        }
+        return reply;
     }
-    let access = Access::load(&state.reader()?, user)?;
     dispatch::dispatch(state, session, access, request, send, recv).await
 }
 
