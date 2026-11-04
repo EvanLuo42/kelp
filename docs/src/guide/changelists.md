@@ -81,4 +81,5 @@ shelf 42     //game/main by alice@alice-pc (3 files) Fix the bridge collision
 A shelf takes a changelist number from the same sequence as submits.
 Shelving the same changelist again replaces the shelf and keeps its number.
 `unshelve` requires the files to be at the versions the shelf was based on, and opens them in a new changelist, or in the one given with `-c`.
+`unshelve --sync` first syncs just the shelf's files to those versions, so a clean workspace is enough.
 Shelves are also what [reviews](reviews.md) are based on.

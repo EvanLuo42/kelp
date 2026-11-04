@@ -278,10 +278,17 @@ enum Cmd {
         cl: Option<String>,
     },
     /// Opens the files of a shelf in this workspace.
+    ///
+    /// The files must be at the revisions the shelf was based on. `--sync`
+    /// brings just those files there first, which is what a reviewer wants
+    /// in a clean workspace.
     Unshelve {
         shelf: u64,
         #[arg(short, long)]
         cl: Option<String>,
+        /// Syncs the shelf's files to the revisions it was based on first.
+        #[arg(short, long)]
+        sync: bool,
     },
     /// Deletes a shelf.
     DeleteShelf { shelf: u64 },

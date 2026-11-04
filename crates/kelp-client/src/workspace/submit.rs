@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 
 use kelp_core::{ClNumber, DepotPath, FileManifest, LocalClId};
@@ -231,7 +231,8 @@ impl Workspace {
             };
             if have != base {
                 return Err(Error::Invalid(format!(
-                    "sync {path} to the revision shelf {shelf} was based on first"
+                    "sync {path} to the revision shelf {shelf} was based on first, \
+                     or unshelve with --sync to have Kelp do it"
                 )));
             }
             self.check_overwrite(&path, content.map(|c| c.content))?;
@@ -276,6 +277,81 @@ impl Workspace {
         }
         self.save()?;
         Ok((cl, opened))
+    }
+
+    /// Brings the files of `shelf` to the revisions it was based on, so that
+    /// [`unshelve`](Self::unshelve) accepts them, and returns the files it
+    /// changed with the changelist each was synced to.
+    ///
+    /// A shelf records the content its files were based on, not a changelist.
+    /// The changelist is found in each file's history. Only the files of the
+    /// shelf are touched; the rest of the workspace stays where it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Invalid`] if the shelf belongs to another stream, if
+    /// no revision of a file has the content the shelf was based on, or if a
+    /// file cannot be replaced because it is opened or has local changes.
+    pub async fn sync_to_shelf_base(
+        &mut self,
+        conn: &Connection,
+        cache: &ContentCache,
+        shelf: u64,
+    ) -> Result<Vec<(DepotPath, u64)>> {
+        let Reply::Shelf(info) = conn.call(&Request::GetShelf { cl: shelf }).await? else {
+            return Err(Error::UnexpectedReply);
+        };
+        if DepotPath::parse(&info.stream)? != self.stream {
+            return Err(Error::Invalid(format!(
+                "shelf {shelf} belongs to {}",
+                info.stream
+            )));
+        }
+        let mut by_cl: BTreeMap<u64, Vec<DepotPath>> = BTreeMap::new();
+        for file in &info.files {
+            let base = match &file.action {
+                SubmitAction::Add { .. } => continue,
+                SubmitAction::Edit { base, .. } | SubmitAction::Delete { base } => *base,
+            };
+            let path = self.stream.join(&file.path)?;
+            if self.have_version(&path).is_some_and(|h| h.content == base) {
+                continue;
+            }
+            if self.state.pending.action(&path).is_some() {
+                return Err(Error::Invalid(format!("{path} is already opened")));
+            }
+            let Reply::Filelog(revisions) = conn
+                .call(&Request::Filelog {
+                    path: path.to_string(),
+                })
+                .await?
+            else {
+                return Err(Error::UnexpectedReply);
+            };
+            // Newest first, so a content that came back is found at its
+            // latest changelist.
+            let revision = revisions
+                .iter()
+                .find(|r| r.content == Some(base))
+                .ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "no revision of {path} has the content shelf {shelf} was based on"
+                    ))
+                })?;
+            by_cl.entry(revision.cl).or_default().push(path);
+        }
+        let mut synced = Vec::new();
+        for (cl, paths) in by_cl {
+            let report = self.sync_paths(conn, cache, Some(cl), &paths).await?;
+            if let Some((path, reason)) = report.skipped.iter().find(|(p, _)| paths.contains(p)) {
+                return Err(Error::Invalid(format!(
+                    "could not sync {path} to changelist {cl} ({reason:?}); revert or remove \
+                     your changes to it first"
+                )));
+            }
+            synced.extend(paths.into_iter().map(|p| (p, cl)));
+        }
+        Ok(synced)
     }
 
     /// Returns the hunks of an opened text file and the changelist each belongs to.

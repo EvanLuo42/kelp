@@ -107,9 +107,10 @@ pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyh
         Cmd::Shelve { cl } => Op::Shelve {
             cl: parse_cl_or_default(cl.as_deref())?,
         },
-        Cmd::Unshelve { shelf, cl } => Op::Unshelve {
+        Cmd::Unshelve { shelf, cl, sync } => Op::Unshelve {
             shelf,
             cl: cl.as_deref().map(parse_cl).transpose()?,
+            sync,
         },
         Cmd::Merge { from, cl: None } => {
             notice("Merging...");
@@ -261,7 +262,10 @@ fn print(outcome: Outcome) {
         }
         Outcome::Submitted(n) => println!("Submitted changelist {n}."),
         Outcome::Shelved(n) => println!("Shelved as {n}."),
-        Outcome::Unshelved { cl, opened } => {
+        Outcome::Unshelved { cl, opened, synced } => {
+            for (path, cl) in synced {
+                println!("synced {path} to changelist {cl}");
+            }
             for (path, action) in opened {
                 println!("{:<7}{path}", action_name(action));
             }

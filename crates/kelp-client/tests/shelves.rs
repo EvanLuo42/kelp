@@ -89,3 +89,95 @@ async fn shelved_changes_move_between_workspaces() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn a_reviewer_syncs_just_the_shelf_to_its_base() {
+    let server = TestServer::start().await;
+    server.create_depot("game").await;
+    let stream = depot_path("//game/main");
+    let (alice_conn, bob_conn) = (server.add_user("alice").await, server.add_user("bob").await);
+    let (alice, bob) = (TestClient::new(), TestClient::new());
+    let mut ws_a = alice.create_workspace(&server, "ws", &stream);
+    alice.sandbox().write("ws/a.txt", "base\n");
+    alice.sandbox().write("ws/b.txt", "other\n");
+    ws_a.reconcile(&alice_conn).await.unwrap();
+    let base_cl = ws_a
+        .submit(
+            &alice_conn,
+            &alice.cache(),
+            LocalClId::DEFAULT,
+            Some("base".into()),
+        )
+        .await
+        .unwrap();
+
+    let a_txt = depot_path("//game/main/a.txt");
+    ws_a.open_files(
+        &alice_conn,
+        std::slice::from_ref(&a_txt),
+        OpenAction::Edit,
+        LocalClId::DEFAULT,
+    )
+    .await
+    .unwrap();
+    alice.sandbox().write("ws/a.txt", "shelved\n");
+    let shelf = ws_a
+        .shelve(&alice_conn, &alice.cache(), LocalClId::DEFAULT)
+        .await
+        .unwrap();
+
+    // The stream moves on, so the head is no longer the shelf's base.
+    let mut other = alice.create_workspace(&server, "other", &stream);
+    other.sync(&alice_conn, &alice.cache(), None).await.unwrap();
+    other
+        .open_files(
+            &alice_conn,
+            std::slice::from_ref(&a_txt),
+            OpenAction::Edit,
+            LocalClId::DEFAULT,
+        )
+        .await
+        .unwrap();
+    alice.sandbox().write("other/a.txt", "newer\n");
+    other
+        .submit(
+            &alice_conn,
+            &alice.cache(),
+            LocalClId::DEFAULT,
+            Some("newer".into()),
+        )
+        .await
+        .unwrap();
+
+    // A fresh workspace has nothing, so a plain unshelve is refused ...
+    let mut ws_b = bob.create_workspace(&server, "ws", &stream);
+    let err = ws_b
+        .unshelve(&bob_conn, &bob.cache(), shelf, None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("--sync"), "{err}");
+
+    // ... until the shelf's files are brought to its base.
+    let synced = ws_b
+        .sync_to_shelf_base(&bob_conn, &bob.cache(), shelf)
+        .await
+        .unwrap();
+    assert_eq!(synced, vec![(a_txt, base_cl)]);
+    assert!(
+        !bob.sandbox().exists("ws/b.txt"),
+        "files outside the shelf are not synced"
+    );
+    let (_, opened) = ws_b
+        .unshelve(&bob_conn, &bob.cache(), shelf, None)
+        .await
+        .unwrap();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(bob.sandbox().read("ws/a.txt"), b"shelved\n");
+
+    // Nothing is left to do for a workspace that is already there.
+    let again = ws_b
+        .sync_to_shelf_base(&bob_conn, &bob.cache(), shelf)
+        .await
+        .unwrap();
+    assert!(again.is_empty());
+}

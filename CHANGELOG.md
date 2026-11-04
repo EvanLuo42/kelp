@@ -8,6 +8,10 @@ The release workflow publishes the section of the tagged version as the GitHub R
 
 ## [Unreleased]
 
+### Added
+
+- `kelp unshelve --sync` first brings just the shelf's files to the revisions it was based on, so a reviewer can unshelve in a clean workspace without finding the base changelist.
+
 ## [0.2.0] - 2026-11-03
 
 ### Added

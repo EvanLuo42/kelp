@@ -88,7 +88,7 @@ This page lists them all.
 | `kelp cl split` | Lists the hunks of an opened text file, or moves one to another changelist |
 | `kelp submit` | Submits a pending changelist |
 | `kelp shelve` | Shelves a pending changelist on the server |
-| `kelp unshelve` | Opens the files of a shelf in this workspace |
+| `kelp unshelve` | Opens the files of a shelf in this workspace; `--sync` first brings them to the revisions it was based on |
 | `kelp delete-shelf` | Deletes a shelf |
 | `kelp shelves` | Lists shelves with files you can read, newest first, of one `--stream` or `--user` if given |
 | `kelp merge` | Merges changes from another stream (default: the parent) into a new changelist. With `--cl`, picks only that changelist's changes, from the stream it was submitted to unless `--from` names another |

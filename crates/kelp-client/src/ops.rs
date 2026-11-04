@@ -73,6 +73,10 @@ pub enum Op {
     Unshelve {
         shelf: u64,
         cl: Option<LocalClId>,
+        /// Sync the shelf's files to the revisions it was based on first;
+        /// see [`Workspace::sync_to_shelf_base`].
+        #[serde(default)]
+        sync: bool,
     },
     Merge {
         from: Option<DepotPath>,
@@ -198,6 +202,9 @@ pub enum Outcome {
     Unshelved {
         cl: LocalClId,
         opened: Vec<(DepotPath, OpenAction)>,
+        /// Files synced to the shelf's base first, with the changelist.
+        #[serde(default)]
+        synced: Vec<(DepotPath, u64)>,
     },
     Merged(MergeReport),
     Changelist(LocalClId),
@@ -443,11 +450,15 @@ impl Session {
                 ws.shelve(&self.connection(&server).await?, &cache, cl)
                     .await?,
             ),
-            Op::Unshelve { shelf, cl } => {
-                let (cl, opened) = ws
-                    .unshelve(&self.connection(&server).await?, &cache, shelf, cl)
-                    .await?;
-                Outcome::Unshelved { cl, opened }
+            Op::Unshelve { shelf, cl, sync } => {
+                let conn = self.connection(&server).await?;
+                let synced = if sync {
+                    ws.sync_to_shelf_base(&conn, &cache, shelf).await?
+                } else {
+                    Vec::new()
+                };
+                let (cl, opened) = ws.unshelve(&conn, &cache, shelf, cl).await?;
+                Outcome::Unshelved { cl, opened, synced }
             }
             Op::Merge { from } => Outcome::Merged(
                 ws.merge(&self.connection(&server).await?, &cache, from)

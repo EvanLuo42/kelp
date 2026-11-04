@@ -38,6 +38,21 @@ After the submit, the review is marked submitted and the shelf is deleted.
 `kelp review list` lists open reviews; `--all` includes closed ones.
 `kelp review close` closes a review without submitting.
 
+## Reviewing a shelf
+
+To look at the change, unshelve it in a clean workspace of the same stream:
+
+```console
+$ kelp unshelve 42 --sync
+synced Content/Maps/Bridge.map to changelist 118
+edit   //game/main/Content/Maps/Bridge.map
+Unshelved into changelist 1.
+```
+
+`--sync` finds the changelist each file was based on and syncs only those files there, leaving the rest of the workspace alone.
+Without it, `unshelve` needs the files to be at that revision already.
+When you are done, delete the workspace, or revert the opened files.
+
 ## Gate rules
 
 An administrator sets the rules that a submit must satisfy:
