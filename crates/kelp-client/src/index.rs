@@ -86,7 +86,7 @@ impl DiskIndex {
             .retain(|l, _| *l != local && !l.starts_with(&prefix));
         match std::fs::symlink_metadata(abs) {
             Ok(meta) if meta.is_file() => {
-                if !Ignore::load(ws.root())?.is_ignored(&local) {
+                if !(Ignore::load(ws.root())?.is_ignored(&local) || ws.in_artifact_dir(&local)) {
                     self.files.insert(local, DiskEntry::of(&meta));
                 }
             }

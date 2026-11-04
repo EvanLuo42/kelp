@@ -1,7 +1,7 @@
 //! Regression tests for workspace files that Kelp must not misjudge or
 //! overwrite.
 
-use kelp_client::{Connection, SkipReason, Workspace};
+use kelp_client::{Connection, DiskIndex, SkipReason, Workspace};
 use kelp_core::{DepotPath, LocalClId};
 use kelp_testkit::depot_path;
 use kelp_testkit::net::{TestClient, TestServer};
@@ -47,6 +47,29 @@ async fn setup(files: &[(&str, &str)]) -> Setup {
         client,
         ws,
     }
+}
+
+#[test]
+fn refreshing_the_index_skips_artifact_directories() {
+    let sandbox = kelp_testkit::Sandbox::new();
+    let mut config = Config::new("ws", "localhost:7474", &stream());
+    config.artifacts.push(kelp_workspace::ArtifactMount {
+        name: "tools".into(),
+        to: "Tools".into(),
+        stream: None,
+        exact: false,
+        tags: Default::default(),
+    });
+    let ws = Workspace::create(&sandbox.dir("ws"), config).unwrap();
+    let mut index = DiskIndex::scan(&ws).unwrap();
+    sandbox.write("ws/Tools/tool.exe", "built\n");
+    sandbox.write("ws/notes.txt", "mine\n");
+    // A watcher reports paths below the canonical root.
+    index.refresh(&ws, &ws.root().join("Tools/tool.exe")).unwrap();
+    index.refresh(&ws, &ws.root().join("notes.txt")).unwrap();
+    let listed: Vec<&str> = index.entries().map(|(l, _)| l).collect();
+    assert_eq!(listed, ["notes.txt"]);
+    assert_eq!(ws.status_indexed(&index).unwrap().added, [path("notes.txt")]);
 }
 
 #[tokio::test]
