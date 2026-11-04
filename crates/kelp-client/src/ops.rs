@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 
 use crate::progress::{Meter, Phase, Progress, Quiet};
 use crate::{
-    CleanReport, Connection, Error, FileDiff, FileReport, Home, MergeReport, Projector,
+    CleanReport, Connection, Error, FileDiff, FileReport, Home, MergeInput, MergeReport, Projector,
     ResolveMode, ResolveOutcome, Result, SnapshotSide, Status, SyncReport, Workspace,
 };
 
@@ -60,6 +60,11 @@ pub enum Op {
     Resolve {
         paths: Vec<PathBuf>,
         mode: ResolveMode,
+    },
+    /// Returns the three versions of files with a pending resolve, for a
+    /// merge tool; all such files if `paths` is empty.
+    ResolveInputs {
+        paths: Vec<PathBuf>,
     },
     Submit {
         cl: LocalClId,
@@ -197,6 +202,7 @@ pub enum Outcome {
     Opened(Vec<(DepotPath, OpenAction)>),
     Reverted(Vec<DepotPath>),
     Resolved(Vec<(DepotPath, ResolveOutcome)>),
+    MergeInputs(Vec<MergeInput>),
     Submitted(u64),
     Shelved(u64),
     Unshelved {
@@ -433,6 +439,17 @@ impl Session {
                 };
                 Outcome::Resolved(
                     ws.resolve(&self.connection(&server).await?, &cache, &paths, mode)
+                        .await?,
+                )
+            }
+            Op::ResolveInputs { paths } => {
+                let paths = if paths.is_empty() {
+                    Vec::new()
+                } else {
+                    ws.expand(&paths, false)?
+                };
+                Outcome::MergeInputs(
+                    ws.merge_inputs(&self.connection(&server).await?, &cache, &paths)
                         .await?,
                 )
             }

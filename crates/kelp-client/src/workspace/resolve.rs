@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::PathBuf;
 
 use kelp_core::DepotPath;
 use kelp_core::typemap::FileKind;
@@ -38,7 +39,77 @@ pub enum ResolveOutcome {
     NeedsChoice,
 }
 
+/// The three versions of a file with a pending resolve, for a merge tool.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MergeInput {
+    pub path: DepotPath,
+    /// Where the file is on disk.
+    pub local: PathBuf,
+    /// The common ancestor; `None` if the file is new on both sides.
+    pub base: Option<Vec<u8>>,
+    /// The workspace file; `None` if it is deleted.
+    pub yours: Option<Vec<u8>>,
+    /// The incoming version; `None` if the other side deleted it.
+    pub theirs: Option<Vec<u8>>,
+}
+
 impl Workspace {
+    /// Returns the versions to merge of the pending resolves of `paths`, or
+    /// of all files if empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Invalid`] if a path has no pending resolve, or an error
+    /// if content cannot be fetched or read.
+    pub async fn merge_inputs(
+        &self,
+        conn: &Connection,
+        cache: &ContentCache,
+        paths: &[DepotPath],
+    ) -> Result<Vec<MergeInput>> {
+        let paths: Vec<DepotPath> = if paths.is_empty() {
+            self.state.resolves.keys().cloned().collect()
+        } else {
+            paths.to_vec()
+        };
+        let mut contents = Vec::new();
+        for path in &paths {
+            let r = self
+                .state
+                .resolves
+                .get(path)
+                .ok_or_else(|| Error::Invalid(format!("{path} needs no resolve")))?;
+            contents.extend(r.base.iter().chain(r.theirs.iter()).map(|v| v.content));
+        }
+        cache.fetch(conn, &contents).await?;
+        let mut inputs = Vec::new();
+        for path in paths {
+            let resolve = self.state.resolves[&path];
+            let local = self.local_path(&path)?;
+            let yours = match fs::read(&local) {
+                Ok(data) => Some(data),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.into()),
+            };
+            let base = match resolve.base {
+                Some(b) => Some(cache.read(&b.content).await?),
+                None => None,
+            };
+            let theirs = match resolve.theirs {
+                Some(t) => Some(cache.read(&t.content).await?),
+                None => None,
+            };
+            inputs.push(MergeInput {
+                path,
+                local,
+                base,
+                yours,
+                theirs,
+            });
+        }
+        Ok(inputs)
+    }
+
     /// Resolves pending resolves of `paths`, or of all files if empty.
     ///
     /// # Errors

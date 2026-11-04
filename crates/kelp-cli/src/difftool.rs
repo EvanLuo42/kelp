@@ -97,7 +97,7 @@ fn arguments(words: &[String], old: &Path, new: &Path, path: &str) -> Vec<String
 /// Splits a command line into words at unquoted whitespace. Single and
 /// double quotes group words and are removed; nothing else is special, so
 /// Windows paths keep their backslashes.
-fn split(line: &str) -> anyhow::Result<Vec<String>> {
+pub(crate) fn split(line: &str) -> anyhow::Result<Vec<String>> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut in_word = false;
@@ -123,7 +123,7 @@ fn split(line: &str) -> anyhow::Result<Vec<String>> {
         }
     }
     if quote.is_some() {
-        bail!("unbalanced quote in the diff tool {line:?}");
+        bail!("unbalanced quote in the tool command {line:?}");
     }
     if in_word {
         words.push(word);

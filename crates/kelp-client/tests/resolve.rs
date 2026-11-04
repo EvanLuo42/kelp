@@ -125,6 +125,36 @@ async fn overlapping_edits_leave_markers_until_accepted() {
 }
 
 #[tokio::test]
+async fn a_merge_tool_gets_all_three_versions_before_markers_overwrite_yours() {
+    let (mut pair, path) = both_editing(BASE.as_bytes()).await;
+    let (theirs, yours) = (BASE.replace("four", "alice"), BASE.replace("four", "bob"));
+    diverge(&mut pair, &path, theirs.as_bytes(), yours.as_bytes()).await;
+
+    let (b, wb, cb) = &mut pair.bob;
+    let inputs = wb.merge_inputs(cb, &b.cache(), &[]).await.unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].path, path);
+    // Windows may name the same file with a `\\?\` prefix.
+    assert_eq!(
+        std::fs::canonicalize(&inputs[0].local).unwrap(),
+        std::fs::canonicalize(b.sandbox().path("ws/notes.txt")).unwrap()
+    );
+    assert_eq!(inputs[0].base.as_deref(), Some(BASE.as_bytes()));
+    assert_eq!(inputs[0].yours.as_deref(), Some(yours.as_bytes()));
+    assert_eq!(inputs[0].theirs.as_deref(), Some(theirs.as_bytes()));
+
+    // What the tool leaves in the file is what `--accept yours` takes.
+    b.sandbox()
+        .write("ws/notes.txt", BASE.replace("four", "alice and bob"));
+    let outcome = wb
+        .resolve(cb, &b.cache(), &[], ResolveMode::AcceptYours)
+        .await
+        .unwrap();
+    assert_eq!(outcome, vec![(path.clone(), ResolveOutcome::TookYours)]);
+    assert!(wb.merge_inputs(cb, &b.cache(), &[path]).await.is_err());
+}
+
+#[tokio::test]
 async fn binary_files_need_an_explicit_choice() {
     let (mut pair, path) = both_editing(&[0, 1, 2, 255]).await;
     diverge(&mut pair, &path, &[0, 9, 9, 255], &[0, 7, 7, 255]).await;

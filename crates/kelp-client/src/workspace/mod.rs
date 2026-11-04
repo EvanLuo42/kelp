@@ -31,7 +31,7 @@ pub use inspect::FileReport;
 pub(crate) use submit::PARALLEL_INGESTS;
 
 pub use merge::MergeReport;
-pub use resolve::{ResolveMode, ResolveOutcome};
+pub use resolve::{MergeInput, ResolveMode, ResolveOutcome};
 pub use snapshot::{Described, FileDiff, SnapshotSide, render_diff};
 pub use sync::{SkipReason, SyncReport};
 

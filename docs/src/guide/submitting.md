@@ -42,6 +42,31 @@ A clean merge is written to the file.
 A merge with conflicts writes conflict markers; edit the file, then run `kelp resolve --accept yours` on it.
 Binary files need an explicit choice, unless the typemap names a merge plugin for them.
 
+### Merge tools
+
+To settle conflicts in a program of your own, give it with `--tool`, or set `KELP_MERGE_TOOL` to use it every time:
+
+```console
+$ kelp resolve --tool "meld {yours} {base} {theirs} --output {merged}"
+$ kelp resolve --tool "code.cmd --wait --merge {theirs} {yours} {base} {merged}"
+```
+
+`resolve` still merges first.
+Only files it cannot settle, those with conflicts and those that need a choice, are opened in the tool, one after another.
+
+`{base}`, `{yours}` and `{theirs}` stand for files with the three versions, which keep the file's name, and `{path}` for its depot path.
+`{merged}` stands for the file the tool writes the result to.
+It starts out as the workspace file, with conflict markers if the merge had conflicts.
+Without any of the four files, `{base} {yours} {theirs} {merged}` are added to the end of the command.
+A version that does not exist, such as the base of a file both sides added, is an empty file.
+The tool runs once per file, without a shell; quote words that contain spaces.
+
+The result is taken if the tool exits with 0.
+If it does not, or the result still has conflict markers, the file stays as it was and keeps its pending resolve.
+A file that one side deletes is not opened in the tool; use `--accept`.
+`--tool` cannot be combined with `--accept`, and `KELP_MERGE_TOOL` is ignored when `--accept` is given.
+On Windows, name `.cmd` and `.bat` programs with their extension, as in `code.cmd`.
+
 ## Undoing a changelist
 
 `kelp undo` opens the reverse of a submitted changelist in a new changelist, which you then submit:

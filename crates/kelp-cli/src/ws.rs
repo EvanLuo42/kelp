@@ -68,7 +68,16 @@ pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyh
             to: cwd.join(to),
             cl: parse_cl_or_default(cl.as_deref())?,
         },
-        Cmd::Resolve { paths, accept } => {
+        Cmd::Resolve {
+            paths,
+            accept,
+            tool,
+        } => {
+            if matches!(accept, Accept::Merge)
+                && let Some(tool) = crate::mergetool::chosen(tool)
+            {
+                return resolve_with_tool(home, cwd, abs(paths), &tool, no_daemon).await;
+            }
             let mode = match accept {
                 Accept::Merge => ResolveMode::Auto,
                 Accept::Yours => ResolveMode::AcceptYours,
@@ -150,6 +159,64 @@ pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyh
         (Outcome::Diff(diffs), Some(tool)) => crate::difftool::run(&tool, &diffs)?,
         (outcome, _) => print(outcome),
     }
+    Ok(())
+}
+
+/// Resolves by merging automatically, then opening what that cannot settle
+/// in the merge tool `tool`.
+async fn resolve_with_tool(
+    home: &Home,
+    cwd: &Path,
+    paths: Vec<PathBuf>,
+    tool: &str,
+    no_daemon: bool,
+) -> anyhow::Result<()> {
+    // The versions have to be taken first: a merge with conflicts overwrites
+    // the workspace file with markers.
+    let op = Op::ResolveInputs {
+        paths: paths.clone(),
+    };
+    let Outcome::MergeInputs(inputs) = daemon::execute(home, cwd, op, no_daemon).await? else {
+        return Err(unexpected());
+    };
+    let op = Op::Resolve {
+        paths,
+        mode: ResolveMode::Auto,
+    };
+    let Outcome::Resolved(mut outcomes) = daemon::execute(home, cwd, op, no_daemon).await? else {
+        return Err(unexpected());
+    };
+    let mut by_tool = Vec::new();
+    for (path, outcome) in &mut outcomes {
+        if !matches!(
+            outcome,
+            ResolveOutcome::Conflicted | ResolveOutcome::NeedsChoice
+        ) {
+            continue;
+        }
+        let Some(input) = inputs.iter().find(|i| i.path == *path) else {
+            continue;
+        };
+        let current = std::fs::read(&input.local).unwrap_or_default();
+        println!("{path}: opening the merge tool");
+        // A failure leaves this file for later without losing the others.
+        match crate::mergetool::run(tool, input, &current) {
+            Ok(crate::mergetool::Merged::Done) => {
+                by_tool.push(input.local.clone());
+                *outcome = ResolveOutcome::Merged;
+            }
+            Ok(crate::mergetool::Merged::Skipped(why)) => eprintln!("kelp: {path}: {why}"),
+            Err(e) => eprintln!("kelp: {path}: {e:#}"),
+        }
+    }
+    if !by_tool.is_empty() {
+        let op = Op::Resolve {
+            paths: by_tool,
+            mode: ResolveMode::AcceptYours,
+        };
+        daemon::execute(home, cwd, op, no_daemon).await?;
+    }
+    print(Outcome::Resolved(outcomes));
     Ok(())
 }
 
@@ -364,6 +431,12 @@ fn print(outcome: Outcome) {
         Outcome::Diff(diffs) => {
             for d in diffs {
                 print!("{}", render_diff(&d));
+            }
+        }
+        // Only the merge tool asks for these, and it does not print them.
+        Outcome::MergeInputs(inputs) => {
+            for input in inputs {
+                println!("{}", input.path);
             }
         }
         Outcome::Cleaned(report) => {

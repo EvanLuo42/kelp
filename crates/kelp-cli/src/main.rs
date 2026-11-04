@@ -5,6 +5,7 @@ mod artifact;
 mod daemon;
 mod difftool;
 mod issue;
+mod mergetool;
 mod plugin;
 mod progress;
 mod review;
@@ -252,10 +253,18 @@ enum Cmd {
     /// Reverts opened files.
     Revert { paths: Vec<PathBuf> },
     /// Resolves files changed both here and in the stream.
+    ///
+    /// Merges text files automatically. With a merge tool, files that
+    /// cannot be merged cleanly are opened in it.
     Resolve {
         paths: Vec<PathBuf>,
         #[arg(long, value_enum, default_value_t = Accept::Merge)]
         accept: Accept,
+        /// Opens files with conflicts in a merge tool, such as
+        /// `"code.cmd --wait --merge {theirs} {yours} {base} {merged}"`;
+        /// defaults to `KELP_MERGE_TOOL`.
+        #[arg(long, conflicts_with = "accept")]
+        tool: Option<String>,
     },
     /// Manages pending changelists.
     #[command(subcommand)]
