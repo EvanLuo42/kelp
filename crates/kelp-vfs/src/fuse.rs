@@ -397,7 +397,8 @@ impl Filesystem for Fuse {
                     // A copy whose mode differs from the lower file's is no
                     // longer what sync may replace.
                     self.overlay.touched(&local);
-                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode & 0o7777))?;
+                    let mode = std::fs::Permissions::from_mode(mode & 0o7777);
+                    std::fs::set_permissions(&path, mode)?;
                 }
                 if let Some(size) = size {
                     self.overlay.touched(&local);
