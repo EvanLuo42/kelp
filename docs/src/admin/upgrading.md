@@ -36,7 +36,7 @@ After upgrading to such a release, every client, `kelpd` daemon and edge that ta
 | Kelp version | Protocol versions |
 |---|---|
 | 0.1.0 | 1 |
-| later | 2 |
+| 0.2.0 and later | 2 |
 
 Protocol version 2 added user profiles, which changed the encoding of several messages, so clients of Kelp 0.1.0 cannot talk to newer servers and the other way round.
 A `kelpd` that was running before the CLI was upgraded keeps the old version until it exits, which it does after 30 minutes without requests; end the old `kelpd` process to switch at once.

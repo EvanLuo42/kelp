@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
@@ -14,17 +14,17 @@ keywords = ["vcs", "version-control", "gamedev"]
 categories = ["development-tools"]
 
 [workspace.dependencies]
-kelp-client = { version = "0.1.0", path = "crates/kelp-client" }
-kelp-daemon = { version = "0.1.0", path = "crates/kelp-daemon" }
-kelp-server = { version = "0.1.0", path = "crates/kelp-server" }
-kelp-core = { version = "0.1.0", path = "crates/kelp-core" }
-kelp-cas = { version = "0.1.0", path = "crates/kelp-cas" }
-kelp-meta = { version = "0.1.0", path = "crates/kelp-meta" }
-kelp-proto = { version = "0.1.0", path = "crates/kelp-proto" }
-kelp-workspace = { version = "0.1.0", path = "crates/kelp-workspace" }
-kelp-vfs = { version = "0.1.0", path = "crates/kelp-vfs" }
-kelp-plugin = { version = "0.1.0", path = "crates/kelp-plugin" }
-kelp-prolly = { version = "0.1.0", path = "crates/kelp-prolly" }
+kelp-client = { version = "0.2.0", path = "crates/kelp-client" }
+kelp-daemon = { version = "0.2.0", path = "crates/kelp-daemon" }
+kelp-server = { version = "0.2.0", path = "crates/kelp-server" }
+kelp-core = { version = "0.2.0", path = "crates/kelp-core" }
+kelp-cas = { version = "0.2.0", path = "crates/kelp-cas" }
+kelp-meta = { version = "0.2.0", path = "crates/kelp-meta" }
+kelp-proto = { version = "0.2.0", path = "crates/kelp-proto" }
+kelp-workspace = { version = "0.2.0", path = "crates/kelp-workspace" }
+kelp-vfs = { version = "0.2.0", path = "crates/kelp-vfs" }
+kelp-plugin = { version = "0.2.0", path = "crates/kelp-plugin" }
+kelp-prolly = { version = "0.2.0", path = "crates/kelp-prolly" }
 kelp-testkit = { path = "crates/kelp-testkit" }
 
 anyhow = "1"

@@ -8,6 +8,8 @@ The release workflow publishes the section of the tagged version as the GitHub R
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-03
+
 ### Added
 
 - A display name and any number of email addresses per user, set with `kelp user name`, `add-email`, `remove-email` and `primary-email`.
@@ -17,6 +19,9 @@ The release workflow publishes the section of the tagged version as the GitHub R
 - `kelp shelves` lists shelves, newest first, optionally of one stream or user.
 - `kelp diff` shows files whose type names a `differ` plugin as the plugin describes them.
 - `kelp diff --tool` and `kelp snapshot diff --tool`, or `KELP_DIFF_TOOL`, open each file in an external diff tool.
+- Install scripts for Linux and Windows, and nightly builds of `main` that they install with `--version nightly`.
+  GitHub Releases attach release builds of `kelp`, `kelpd` and `kelp-server`.
+- Long steps such as scanning a workspace show progress and notices.
 - `[oidc] expect_claim` chooses which claim links a first single sign-on login to an account an administrator expected (`sub`, verified `email`, or the user name as before).
 
 ### Changed
@@ -30,6 +35,7 @@ The release workflow publishes the section of the tagged version as the GitHub R
 - A merge that leaves out a change of its source, for example because the workspace's view does not cover it, is refused.
 - Only its owner or an administrator of it may delete a task stream, and others may create a task stream only from a parent whose every file they can read.
 - Turning on two-factor login again requires turning it off first, with a current code.
+- `status` remembers files it hashed and found unchanged, and materializing streams large files instead of reading them whole.
 - Failed logins no longer reveal whether an account exists.
 
 ### Fixed
@@ -70,5 +76,6 @@ The first release.
 - Webhooks, WebAssembly plugins and a C SDK.
 - Backup, restore, `fsck`, systemd service installation, and `/healthz` and Prometheus `/metrics` endpoints.
 
-[Unreleased]: https://github.com/EvanLuo42/kelp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/EvanLuo42/kelp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/EvanLuo42/kelp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/EvanLuo42/kelp/releases/tag/v0.1.0
