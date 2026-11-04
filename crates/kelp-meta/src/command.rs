@@ -315,9 +315,9 @@ pub enum Command {
     /// Removes the single sign-on link of `user` and any expected one.
     UnlinkSso { user: String },
     /// Merges the user `from` into `into`, or renames `from` to `into` if
-    /// no such user exists. Groups, tokens, locks, shelves, reviews and
-    /// rules tables move to `into`; history keeps the name it was recorded
-    /// under, and `from` remains reserved as an alias of `into`.
+    /// no such user exists. Groups, tokens, locks, shelves, reviews, stream
+    /// ownership and rules tables move to `into`; history keeps the name it
+    /// was recorded under, and `from` remains reserved as an alias of `into`.
     MergeUser { from: String, into: String },
     /// Adds `user` to or removes them from the existing group `group`.
     /// Unlike [`Command::SetGroup`], this never deletes the group, and

@@ -200,7 +200,7 @@ fn write_consensus(txn: &WriteTransaction, consensus: &BTreeMap<String, Vec<u8>>
 
 fn apply_in(txn: &WriteTransaction, proposal: &Proposal) -> Result<Outcome> {
     let logged = |cmd: &Command, actor: &str| -> Result<Outcome> {
-        let applied = apply::apply(txn, cmd, Origin::Local)?;
+        let applied = apply::apply(txn, cmd, Origin::Local, actor)?;
         let index = append_log(txn, cmd, actor, Origin::Local)?;
         Ok(Outcome::Logged { index, applied })
     };

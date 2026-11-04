@@ -23,7 +23,13 @@ pub(super) enum Origin {
     Replicated,
 }
 
-pub(super) fn apply(txn: &WriteTransaction, cmd: &Command, origin: Origin) -> Result<Applied> {
+/// Applies `cmd` on behalf of `actor`, the user it is logged under.
+pub(super) fn apply(
+    txn: &WriteTransaction,
+    cmd: &Command,
+    origin: Origin,
+    actor: &str,
+) -> Result<Applied> {
     match cmd {
         Command::CreateUser {
             name,
@@ -247,6 +253,10 @@ pub(super) fn apply(txn: &WriteTransaction, cmd: &Command, origin: Origin) -> Re
             };
             streams.insert(path.key(), enc(&stream).as_slice())?;
             drop(streams);
+            // A stream deleted before deleting dropped its views may have
+            // left some under this path.
+            super::streams::forget_views(txn, path.key())?;
+            super::streams::set_owner(txn, path, actor)?;
             if let Some(p) = parent {
                 set_integration(
                     txn,
