@@ -8,7 +8,7 @@ use kelp_client::{Connection, DiskIndex, SkipReason, Workspace};
 use kelp_core::{ContentId, DepotPath, LocalClId};
 use kelp_testkit::net::{TestClient, TestServer};
 use kelp_testkit::{Sandbox, depot_path};
-use kelp_workspace::{Config, HaveEntry, State};
+use kelp_workspace::{Config, HaveEntry, OpenAction, State};
 
 struct Setup {
     server: TestServer,
@@ -202,4 +202,27 @@ async fn sync_skips_files_that_map_into_kelp_directories() {
     // Later syncs keep refusing them.
     let report = ws.sync(&s.conn, &other.cache(), None).await.unwrap();
     assert_eq!(report.skipped.len(), 2);
+}
+
+#[tokio::test]
+async fn tracked_files_that_become_ignored_are_not_deleted() {
+    let mut s = setup(&[("a.txt", "a\n"), ("Saved/log.txt", "log\n")]).await;
+    s.client.sandbox().write("ws/.kelpignore", "Saved/\n");
+    let status = s.ws.status().unwrap();
+    assert!(status.deleted.is_empty(), "{status:?}");
+    assert_eq!(status.added, [path(".kelpignore")]);
+
+    let opened = s.ws.reconcile(&s.conn).await.unwrap();
+    assert_eq!(opened, [(path(".kelpignore"), OpenAction::Add)]);
+    assert!(s.client.sandbox().exists("ws/Saved/log.txt"));
+
+    // They are still compared with what was synced.
+    s.client.sandbox().write("ws/Saved/log.txt", "new log\n");
+    assert_eq!(s.ws.status().unwrap().modified, [path("Saved/log.txt")]);
+    let report =
+        s.ws.clean(&s.conn, &s.client.cache(), &[], true)
+            .await
+            .unwrap();
+    assert_eq!(report.restored, [path("Saved/log.txt")]);
+    assert!(report.removed.is_empty());
 }

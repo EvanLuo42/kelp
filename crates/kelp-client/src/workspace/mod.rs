@@ -414,11 +414,29 @@ impl Workspace {
                 None => status.added.push(path),
             }
         }
-        for path in self.state.have.keys() {
-            if !seen.contains(path) && self.state.pending.action(path).is_none() {
-                status.deleted.push(path.clone());
+        for (path, h) in &self.state.have {
+            if seen.contains(path) || self.state.pending.action(path).is_some() {
+                continue;
+            }
+            // Listings leave out ignored files and artifact directories, but
+            // a tracked file there, say one a newly synced .kelpignore
+            // covers, is still tracked and not deleted.
+            let abs = self.abs(&h.local);
+            let entry = match fs::symlink_metadata(&abs) {
+                Ok(meta) if meta.is_file() => DiskEntry::of(&meta),
+                // Missing, or something else is in its place.
+                _ => {
+                    status.deleted.push(path.clone());
+                    continue;
+                }
+            };
+            if !entry_matches(&abs, h, entry, recorded)? {
+                status.modified.push(path.clone());
+            } else if !mtime_trusted(h, entry, recorded) && !racy(entry.mtime) {
+                unchanged.push((path.clone(), entry.mtime));
             }
         }
+        status.modified.sort();
         Ok((status, unchanged))
     }
 
