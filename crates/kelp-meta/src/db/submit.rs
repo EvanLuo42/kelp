@@ -103,7 +103,10 @@ pub(super) fn apply_submit(
 
     if let Some(integration) = &submission.integration {
         set_integration(txn, &stream.path, integration)?;
-        let copied_up = stream.parent.as_ref() != Some(&integration.source);
+        // Only the server's copy-up makes the parent match the child; a
+        // workspace merging a child into its parent may have kept changes
+        // of the parent, which the child still has to merge down.
+        let copied_up = stream.parent.as_ref() != Some(&integration.source) && server_side;
         if copied_up {
             // The child now matches its parent, so it has nothing left to merge down.
             let merged = crate::Integration {

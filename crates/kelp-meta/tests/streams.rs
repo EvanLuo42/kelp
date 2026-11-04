@@ -92,6 +92,52 @@ fn child_streams_branch_in_constant_time_and_copy_up_after_merging() {
 }
 
 #[test]
+fn merging_a_child_from_a_parent_workspace_leaves_it_to_merge_down() {
+    let f = MetaFixture::new();
+    f.submit("//game/main", vec![f.add("//game/main/a.txt", b"a1")])
+        .unwrap();
+    f.create_stream("//game/dev", StreamKind::Development, "//game/main");
+    let dev_cl = f
+        .submit("//game/dev", vec![f.add("//game/dev/c.txt", b"c")])
+        .unwrap();
+    f.submit(
+        "//game/main",
+        vec![f.edit("//game/main/a.txt", b"a1", b"a2")],
+    )
+    .unwrap();
+
+    // A workspace of main merges dev and keeps main's a2.
+    let merge = f
+        .submit_as(
+            "//game/main",
+            "alice",
+            "ws",
+            vec![f.add("//game/main/c.txt", b"c")],
+            Some(("//game/dev", dev_cl.0)),
+        )
+        .unwrap();
+    let r = f.db().read().unwrap();
+    assert_eq!(
+        r.integration(&p("//game/main"), &p("//game/dev")).unwrap(),
+        Some(dev_cl)
+    );
+    assert_eq!(
+        r.integration(&p("//game/dev"), &p("//game/main")).unwrap(),
+        Some(ClNumber(1)),
+        "dev still lacks a2, so it has not merged main through {merge}"
+    );
+    drop(r);
+    assert!(
+        matches!(
+            f.db()
+                .copy_up(&p("//game/dev"), "alice".into(), "copy".into(), 3),
+            Err(Error::Conflict(_))
+        ),
+        "copying up would revert a2"
+    );
+}
+
+#[test]
 fn release_streams_do_not_copy_up() {
     let f = MetaFixture::new();
     f.submit("//game/main", vec![f.add("//game/main/a.txt", b"a")])
