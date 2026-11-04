@@ -122,6 +122,9 @@ const MIGRATIONS: &[Migration] = &[
     refold::refold,
 ];
 const NEXT_CL: &str = "next_cl";
+/// The next changelist number as of the last obliterate, which rewrites the
+/// trees of earlier changelists.
+const OBLITERATED: &str = "obliterated_at";
 const PROTECTIONS: &str = "protections";
 const REVIEW_RULES: &str = "review_rules";
 

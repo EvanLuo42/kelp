@@ -5,8 +5,8 @@ use redb::{ReadableTable, WriteTransaction};
 
 use super::nodes::TxnNodes;
 use super::{
-    CHANGES, REVIEWS, REVISIONS, SHELVES, STREAM_CHANGES, STREAM_ROOTS, STREAMS, VIEWS, dec, enc,
-    stream_relative,
+    CHANGES, META, OBLITERATED, REVIEWS, REVISIONS, SHELVES, STREAM_CHANGES, STREAM_ROOTS, STREAMS,
+    VIEWS, dec, enc, stream_relative,
 };
 use crate::record::{Changelist, Review, Shelf, Stream};
 use crate::{Dirs, EntryKind, Error, Result};
@@ -262,6 +262,11 @@ pub(super) fn apply(txn: &WriteTransaction, args: &[String]) -> Result<()> {
         txn.open_table(VIEWS)?
             .insert((key.as_str(), cl), root.0.0.as_slice())?;
     }
+    drop(nodes);
+    // Trees of old changelists now have new nodes, which a collection
+    // that marked before this did not see; see `MetaDb::sweep_nodes`.
+    let next = super::next_cl(txn)?;
+    txn.open_table(META)?.insert(OBLITERATED, next.0)?;
     Ok(())
 }
 
