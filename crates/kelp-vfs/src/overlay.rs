@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, Metadata};
 use std::io::{self, BufWriter};
 use std::path::{Path, PathBuf};
@@ -42,6 +42,10 @@ pub struct Overlay {
     whiteouts: Mutex<BTreeSet<String>>,
     /// Upper files copied from the lower layer and not modified since.
     clean: Mutex<HashSet<String>>,
+    /// How many handles have each upper file open for writing. Sync leaves
+    /// such a file alone even while it is clean, since a write may be on its
+    /// way.
+    writers: Mutex<HashMap<String, usize>>,
     /// Held while a file is copied up and while the lower layer changes, so
     /// that a copy of an old version cannot land after a new one.
     layers: Mutex<()>,
@@ -71,6 +75,7 @@ impl Overlay {
             lower: RwLock::new(lower),
             whiteouts: Mutex::new(whiteouts),
             clean: Mutex::default(),
+            writers: Mutex::default(),
             layers: Mutex::default(),
             hydrator,
         })
@@ -149,8 +154,42 @@ impl Overlay {
     /// Returns [`io::ErrorKind::NotFound`] if nothing is at `local`, or the
     /// hydrator's error.
     pub fn hydrate(&self, local: &str) -> io::Result<PathBuf> {
-        let path = self.upper_path(local);
         let _layers = self.layers.lock().expect("layers lock");
+        self.hydrate_locked(local)
+    }
+
+    /// Like [`hydrate`](Self::hydrate), for a file about to be opened for
+    /// writing or changed in place: until [`close_writer`](Self::close_writer)
+    /// is called as many times, sync leaves the upper file alone.
+    ///
+    /// # Errors
+    ///
+    /// As for [`hydrate`](Self::hydrate).
+    pub fn open_writer(&self, local: &str) -> io::Result<PathBuf> {
+        let _layers = self.layers.lock().expect("layers lock");
+        let path = self.hydrate_locked(local)?;
+        *self
+            .writers
+            .lock()
+            .expect("writers lock")
+            .entry(local.to_owned())
+            .or_default() += 1;
+        Ok(path)
+    }
+
+    /// Ends what [`open_writer`](Self::open_writer) started for `local`.
+    pub fn close_writer(&self, local: &str) {
+        let mut writers = self.writers.lock().expect("writers lock");
+        if let Some(n) = writers.get_mut(local) {
+            *n -= 1;
+            if *n == 0 {
+                writers.remove(local);
+            }
+        }
+    }
+
+    fn hydrate_locked(&self, local: &str) -> io::Result<PathBuf> {
+        let path = self.upper_path(local);
         match self.node(local) {
             Some(Node::Upper(_)) => {}
             Some(Node::LowerFile(file)) => {
@@ -276,6 +315,18 @@ impl Overlay {
         let source = self.hydrate(from)?;
         self.ensure_upper_parent(to)?;
         fs::rename(source, self.upper_path(to))?;
+        {
+            // Handles open for writing follow the file to its new path.
+            let mut writers = self.writers.lock().expect("writers lock");
+            let moved: Vec<(String, String)> = writers
+                .keys()
+                .filter_map(|p| Some((p.clone(), rebase(p, from, to)?)))
+                .collect();
+            for (old, new) in moved {
+                let n = writers.remove(&old).unwrap_or_default();
+                *writers.entry(new).or_default() += n;
+            }
+        }
         self.touched(from);
         self.touched(to);
         self.set_whiteout(to, false)?;
@@ -373,7 +424,13 @@ impl Projection for Overlay {
         let _layers = self.layers.lock().expect("layers lock");
         let upper = self.upper_path(local);
         if fs::symlink_metadata(&upper).is_ok() {
-            if !self.clean.lock().expect("clean lock").contains(local) {
+            if !self.clean.lock().expect("clean lock").contains(local)
+                || self
+                    .writers
+                    .lock()
+                    .expect("writers lock")
+                    .contains_key(local)
+            {
                 return Ok(false);
             }
             fs::remove_file(&upper)?;
@@ -404,6 +461,16 @@ fn reject_reserved(local: &str) -> io::Result<()> {
         )),
         false => Ok(()),
     }
+}
+
+/// Returns `path` moved from below `from` to below `to`, or `None` if it is
+/// neither `from` nor below it.
+pub(crate) fn rebase(path: &str, from: &str, to: &str) -> Option<String> {
+    if path == from {
+        return Some(to.to_owned());
+    }
+    let rest = path.strip_prefix(from)?.strip_prefix('/')?;
+    Some(join(to, rest))
 }
 
 fn join(dir: &str, name: &str) -> String {

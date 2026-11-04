@@ -1,6 +1,6 @@
 //! The FUSE presentation of an [`Overlay`] on Linux.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::{File, FileTimes};
 use std::io;
@@ -37,11 +37,25 @@ struct Fuse {
     overlay: Arc<Overlay>,
     paths: HashMap<u64, String>,
     inodes: HashMap<String, u64>,
+    /// Inodes whose path was unlinked or replaced while the kernel still
+    /// knew them; they keep their last path until forgotten, and answer
+    /// through an open handle if there is one.
+    orphans: HashSet<u64>,
     next_inode: u64,
-    files: HashMap<u64, (File, String)>,
+    files: HashMap<u64, Handle>,
     next_handle: u64,
     uid: u32,
     gid: u32,
+}
+
+/// An open file.
+struct Handle {
+    file: File,
+    /// The file's current workspace path, which follows renames.
+    local: String,
+    ino: u64,
+    /// Whether the handle counts as a writer of `local` in the overlay.
+    writer: bool,
 }
 
 impl Fuse {
@@ -52,6 +66,7 @@ impl Fuse {
             overlay,
             paths: HashMap::from([(ROOT, String::new())]),
             inodes: HashMap::from([(String::new(), ROOT)]),
+            orphans: HashSet::new(),
             next_inode: ROOT + 1,
             files: HashMap::new(),
             next_handle: 1,
@@ -60,7 +75,12 @@ impl Fuse {
         }
     }
 
+    /// Returns the path of `ino`; an orphan has none, since another file
+    /// may live at its old path.
     fn path(&self, ino: u64) -> Result<String, i32> {
+        if self.orphans.contains(&ino) {
+            return Err(libc::ENOENT);
+        }
         self.paths.get(&ino).cloned().ok_or(libc::ENOENT)
     }
 
@@ -107,25 +127,7 @@ impl Fuse {
             flags: 0,
         };
         Ok(match node {
-            Node::Upper(meta) => {
-                let mtime = UNIX_EPOCH
-                    + Duration::new(meta.mtime().max(0) as u64, meta.mtime_nsec().max(0) as u32);
-                FileAttr {
-                    size: meta.len(),
-                    blocks: meta.blocks(),
-                    atime: mtime,
-                    mtime,
-                    ctime: mtime,
-                    kind: if meta.is_dir() {
-                        FileType::Directory
-                    } else {
-                        FileType::RegularFile
-                    },
-                    perm: (meta.permissions().mode() & 0o7777) as u16,
-                    nlink: meta.nlink() as u32,
-                    ..base
-                }
-            }
+            Node::Upper(meta) => self.upper_attr(ino, &meta),
             Node::LowerFile(f) => FileAttr {
                 size: f.size,
                 blocks: f.size.div_ceil(512),
@@ -145,7 +147,7 @@ impl Fuse {
         })
     }
 
-    fn open_handle(&mut self, local: &str, flags: i32) -> Result<u64, i32> {
+    fn open_handle(&mut self, ino: u64, local: &str, flags: i32) -> Result<u64, i32> {
         let writing = flags & libc::O_ACCMODE != libc::O_RDONLY;
         if writing
             && let Some(Node::LowerFile(f)) = self.overlay.node(local)
@@ -153,22 +155,55 @@ impl Fuse {
         {
             return Err(libc::EACCES);
         }
-        let path = self.overlay.hydrate(local).map_err(errno)?;
-        let file = File::options()
+        // A writer is registered before the file is opened, so that sync
+        // cannot replace the copy between hydrating and writing it.
+        let path = match writing {
+            true => self.overlay.open_writer(local),
+            false => self.overlay.hydrate(local),
+        }
+        .map_err(errno)?;
+        let opened = File::options()
             .read(true)
             .write(writing)
             .open(path)
-            .map_err(errno)?;
-        if flags & libc::O_TRUNC != 0 {
-            file.set_len(0).map_err(errno)?;
-            self.overlay.touched(local);
-        }
-        let fh = self.next_handle;
-        self.next_handle += 1;
-        self.files.insert(fh, (file, local.to_owned()));
-        Ok(fh)
+            .and_then(|file| {
+                if flags & libc::O_TRUNC != 0 {
+                    self.overlay.touched(local);
+                    file.set_len(0)?;
+                }
+                Ok(file)
+            });
+        let file = match opened {
+            Ok(file) => file,
+            Err(e) => {
+                if writing {
+                    self.overlay.close_writer(local);
+                }
+                return Err(errno(e));
+            }
+        };
+        Ok(self.add_handle(file, local, ino, writing))
     }
 
+    fn add_handle(&mut self, file: File, local: &str, ino: u64, writer: bool) -> u64 {
+        let fh = self.next_handle;
+        self.next_handle += 1;
+        let local = local.to_owned();
+        self.files.insert(
+            fh,
+            Handle {
+                file,
+                local,
+                ino,
+                writer,
+            },
+        );
+        fh
+    }
+
+    /// Detaches the inodes at and below `local`, which is gone, from their
+    /// paths. Ones still open become orphans until the kernel forgets them,
+    /// so that their handles keep working.
     fn forget_path(&mut self, local: &str) {
         let prefix = format!("{local}/");
         let gone: Vec<String> = self
@@ -179,8 +214,84 @@ impl Fuse {
             .collect();
         for path in gone {
             if let Some(ino) = self.inodes.remove(&path) {
-                self.paths.remove(&ino);
+                if self.files.values().any(|h| h.ino == ino) {
+                    self.orphans.insert(ino);
+                } else {
+                    self.paths.remove(&ino);
+                }
             }
+        }
+    }
+
+    /// Moves the inodes at and below `from` to `to`, after a rename, so
+    /// that the kernel's inodes keep naming the same files.
+    fn move_path(&mut self, from: &str, to: &str) {
+        if from == to {
+            return;
+        }
+        // Whatever the rename replaced is gone.
+        self.forget_path(to);
+        let moved: Vec<(String, String)> = self
+            .inodes
+            .keys()
+            .filter_map(|p| Some((p.clone(), crate::overlay::rebase(p, from, to)?)))
+            .collect();
+        for (old, new) in moved {
+            if let Some(ino) = self.inodes.remove(&old) {
+                self.paths.insert(ino, new.clone());
+                self.inodes.insert(new, ino);
+            }
+        }
+        for handle in self.files.values_mut() {
+            if let Some(new) = crate::overlay::rebase(&handle.local, from, to) {
+                handle.local = new;
+            }
+        }
+    }
+
+    /// Returns the attributes of `ino`, through an open handle for an
+    /// orphan.
+    fn attr_of(&mut self, ino: u64) -> Result<FileAttr, i32> {
+        if !self.orphans.contains(&ino) {
+            let local = self.path(ino)?;
+            return self.attr(&local);
+        }
+        let handle = self.orphan_handle(ino, None)?;
+        let meta = handle.file.metadata().map_err(errno)?;
+        Ok(self.upper_attr(ino, &meta))
+    }
+
+    /// Returns the handle `fh`, or else any handle, open on the orphan `ino`.
+    fn orphan_handle(&self, ino: u64, fh: Option<u64>) -> Result<&Handle, i32> {
+        fh.and_then(|fh| self.files.get(&fh))
+            .filter(|h| h.ino == ino)
+            .or_else(|| self.files.values().find(|h| h.ino == ino))
+            .ok_or(libc::ENOENT)
+    }
+
+    fn upper_attr(&self, ino: u64, meta: &std::fs::Metadata) -> FileAttr {
+        let mtime = UNIX_EPOCH
+            + Duration::new(meta.mtime().max(0) as u64, meta.mtime_nsec().max(0) as u32);
+        FileAttr {
+            ino,
+            size: meta.len(),
+            blocks: meta.blocks(),
+            atime: mtime,
+            mtime,
+            ctime: mtime,
+            crtime: UNIX_EPOCH,
+            kind: if meta.is_dir() {
+                FileType::Directory
+            } else {
+                FileType::RegularFile
+            },
+            perm: (meta.permissions().mode() & 0o7777) as u16,
+            nlink: meta.nlink() as u32,
+            uid: self.uid,
+            gid: self.gid,
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
         }
     }
 }
@@ -210,8 +321,16 @@ impl Filesystem for Fuse {
         }
     }
 
+    fn forget(&mut self, _req: &Request<'_>, ino: u64, _nlookup: u64) {
+        // The kernel forgets an inode once it no longer uses it at all; an
+        // orphan has no path to be found by again.
+        if self.orphans.remove(&ino) {
+            self.paths.remove(&ino);
+        }
+    }
+
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
-        match self.path(ino).and_then(|p| self.attr(&p)) {
+        match self.attr_of(ino) {
             Ok(attr) => reply.attr(&TTL, &attr),
             Err(e) => reply.error(e),
         }
@@ -229,16 +348,41 @@ impl Filesystem for Fuse {
         atime: Option<TimeOrNow>,
         mtime: Option<TimeOrNow>,
         _ctime: Option<SystemTime>,
-        _fh: Option<u64>,
+        fh: Option<u64>,
         _crtime: Option<SystemTime>,
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
+        let times = (atime.is_some() || mtime.is_some()).then(|| {
+            let mut times = FileTimes::new();
+            if let Some(t) = atime {
+                times = times.set_accessed(time(t));
+            }
+            if let Some(t) = mtime {
+                times = times.set_modified(time(t));
+            }
+            times
+        });
         let result = (|| -> Result<FileAttr, i32> {
+            if self.orphans.contains(&ino) {
+                // An unlinked file still open: change it through its handle.
+                let file = &self.orphan_handle(ino, fh)?.file;
+                if let Some(mode) = mode {
+                    file.set_permissions(std::fs::Permissions::from_mode(mode & 0o7777))
+                        .map_err(errno)?;
+                }
+                if let Some(size) = size {
+                    file.set_len(size).map_err(errno)?;
+                }
+                if let Some(times) = times {
+                    file.set_times(times).map_err(errno)?;
+                }
+                return self.attr_of(ino);
+            }
             let local = self.path(ino)?;
-            let only_mode = size.is_none() && atime.is_none() && mtime.is_none();
+            let only_mode = size.is_none() && times.is_none();
             if let (Some(mode), true) = (mode, only_mode)
                 && let Some(Node::LowerFile(f)) = self.overlay.node(&local)
                 && (mode & 0o111 != 0) == f.executable
@@ -246,33 +390,33 @@ impl Filesystem for Fuse {
             {
                 return self.attr(&local);
             }
-            let path = self.overlay.hydrate(&local).map_err(errno)?;
-            if let Some(mode) = mode {
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode & 0o7777))
-                    .map_err(errno)?;
-            }
-            if let Some(size) = size {
-                File::options()
-                    .write(true)
-                    .open(&path)
-                    .and_then(|f| f.set_len(size))
-                    .map_err(errno)?;
-                self.overlay.touched(&local);
-            }
-            if atime.is_some() || mtime.is_some() {
-                let mut times = FileTimes::new();
-                if let Some(t) = atime {
-                    times = times.set_accessed(time(t));
+            // Holding a writer keeps sync from replacing the copy midway.
+            let path = self.overlay.open_writer(&local).map_err(errno)?;
+            let changed = (|| -> io::Result<()> {
+                if let Some(mode) = mode {
+                    // A copy whose mode differs from the lower file's is no
+                    // longer what sync may replace.
+                    self.overlay.touched(&local);
+                    let mode = std::fs::Permissions::from_mode(mode & 0o7777);
+                    std::fs::set_permissions(&path, mode)?;
                 }
-                if let Some(t) = mtime {
-                    times = times.set_modified(time(t));
+                if let Some(size) = size {
+                    self.overlay.touched(&local);
+                    File::options()
+                        .write(true)
+                        .open(&path)
+                        .and_then(|f| f.set_len(size))?;
                 }
-                File::options()
-                    .write(true)
-                    .open(&path)
-                    .and_then(|f| f.set_times(times))
-                    .map_err(errno)?;
-            }
+                if let Some(times) = times {
+                    File::options()
+                        .write(true)
+                        .open(&path)
+                        .and_then(|f| f.set_times(times))?;
+                }
+                Ok(())
+            })();
+            self.overlay.close_writer(&local);
+            changed.map_err(errno)?;
             self.attr(&local)
         })();
         match result {
@@ -349,8 +493,7 @@ impl Filesystem for Fuse {
                 return Err(libc::EEXIST);
             }
             self.overlay.rename(&from, &to).map_err(errno)?;
-            self.forget_path(&from);
-            self.forget_path(&to);
+            self.move_path(&from, &to);
             Ok(())
         })();
         match result {
@@ -360,7 +503,7 @@ impl Filesystem for Fuse {
     }
 
     fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
-        match self.path(ino).and_then(|p| self.open_handle(&p, flags)) {
+        match self.path(ino).and_then(|p| self.open_handle(ino, &p, flags)) {
             Ok(fh) => reply.opened(fh, 0),
             Err(e) => reply.error(e),
         }
@@ -381,10 +524,10 @@ impl Filesystem for Fuse {
             let file = self.overlay.create(&local).map_err(errno)?;
             file.set_permissions(std::fs::Permissions::from_mode(mode & !umask & 0o7777))
                 .map_err(errno)?;
-            let fh = self.next_handle;
-            self.next_handle += 1;
-            self.files.insert(fh, (file, local.clone()));
-            Ok((self.attr(&local)?, fh))
+            let attr = self.attr(&local)?;
+            // A created file is never clean, so sync leaves it alone
+            // without counting it as a writer.
+            Ok((attr, self.add_handle(file, &local, attr.ino, false)))
         })();
         match result {
             Ok((attr, fh)) => reply.created(&TTL, &attr, 0, fh, 0),
@@ -403,7 +546,7 @@ impl Filesystem for Fuse {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        let Some((file, _)) = self.files.get(&fh) else {
+        let Some(Handle { file, .. }) = self.files.get(&fh) else {
             return reply.error(libc::EBADF);
         };
         let mut buf = vec![0; size as usize];
@@ -430,14 +573,14 @@ impl Filesystem for Fuse {
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
-        let Some((file, local)) = self.files.get(&fh) else {
+        let Some(Handle { file, local, .. }) = self.files.get(&fh) else {
             return reply.error(libc::EBADF);
         };
+        // The copy stops being clean before it changes; the handle being a
+        // writer keeps sync from replacing it meanwhile.
+        self.overlay.touched(local);
         match file.write_all_at(data, offset as u64) {
-            Ok(()) => {
-                self.overlay.touched(local);
-                reply.written(data.len() as u32);
-            }
+            Ok(()) => reply.written(data.len() as u32),
             Err(e) => reply.error(errno(e)),
         }
     }
@@ -450,7 +593,7 @@ impl Filesystem for Fuse {
         _datasync: bool,
         reply: ReplyEmpty,
     ) {
-        match self.files.get(&fh).map(|(f, _)| f.sync_all()) {
+        match self.files.get(&fh).map(|h| h.file.sync_all()) {
             Some(Ok(())) | None => reply.ok(),
             Some(Err(e)) => reply.error(errno(e)),
         }
@@ -477,7 +620,11 @@ impl Filesystem for Fuse {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        self.files.remove(&fh);
+        if let Some(handle) = self.files.remove(&fh)
+            && handle.writer
+        {
+            self.overlay.close_writer(&handle.local);
+        }
         reply.ok();
     }
 

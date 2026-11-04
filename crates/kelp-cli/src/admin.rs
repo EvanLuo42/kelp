@@ -11,8 +11,8 @@ use kelp_workspace::Config;
 
 use crate::daemon;
 use crate::util::{
-    LoginMethod, connect, link_sso, login, notice, pick_server, read_password, unexpected,
-    workspace_name,
+    LoginMethod, connect, link_sso, login, notice, pick_server, read_new_password, read_password,
+    unexpected, workspace_name,
 };
 use crate::{Cmd, DepotCmd, DocCmd, GroupCmd, Kind, LabelCmd, StreamCmd, TotpCmd, UserCmd};
 use kelp_client::ops::Op;
@@ -91,7 +91,7 @@ pub async fn run(
             let conn = connect(home, &server()?).await?;
             let password = match service || replica {
                 true => None,
-                false => Some(read_password(
+                false => Some(read_new_password(
                     password_stdin,
                     &format!("Password for {name}: "),
                     true,
@@ -115,7 +115,7 @@ pub async fn run(
                 Some(_) => None,
                 None => Some(read_password(password_stdin, "Current password: ", false)?),
             };
-            let password = read_password(password_stdin, "New password: ", !password_stdin)?;
+            let password = read_new_password(password_stdin, "New password: ", !password_stdin)?;
             conn.call(&Request::SetPassword {
                 user,
                 current,
