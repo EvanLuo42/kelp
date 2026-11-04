@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use kelp_core::ClNumber;
+use kelp_core::{ClNumber, DepotPath, TreeId};
 use kelp_meta::acl::Level;
-use kelp_meta::db::Proposal;
+use kelp_meta::db::{Proposal, Reader};
 use kelp_meta::record::{Import, Stream};
 use kelp_meta::{Command, Dirs, EntryKind, StreamKind};
 use kelp_proto::rpc::{FileDelta, FileInfo, ImportInfo, IntegrationInfo, StreamInfo};
@@ -110,27 +110,34 @@ pub(super) async fn delete_stream(state: &State, access: &Access, stream: String
 }
 
 /// Creates a stream. Administrators create any kind; other users who can
-/// see the parent may create task streams.
+/// read every file of the parent may create task streams of it.
 pub(super) async fn create_stream(
-    state: &State,
-    access: &Access,
+    state: &Arc<State>,
+    access: Access,
     path: String,
     kind: kelp_proto::rpc::StreamKind,
     parent: Option<String>,
 ) -> Response {
     let kind = meta_kind(kind);
     let parent = parent.as_deref().map(parse_path).transpose()?;
-    if !access.is_admin() {
-        match (&parent, kind) {
-            (Some(p), StreamKind::Task) => access.require_stream(p)?,
-            _ => {
-                return Err(ErrorReply::new(
-                    ErrorKind::Forbidden,
-                    "only administrators create this kind of stream",
-                ));
-            }
+    let access = match (access.is_admin(), &parent, kind) {
+        (true, _, _) => access,
+        (false, Some(p), StreamKind::Task) => {
+            access.require_stream(p)?;
+            let (checking, p) = (state.clone(), p.clone());
+            blocking(move || {
+                require_whole_tree(&checking, &access, &p)?;
+                Ok(access)
+            })
+            .await?
         }
-    }
+        (false, _, _) => {
+            return Err(ErrorReply::new(
+                ErrorKind::Forbidden,
+                "only administrators create this kind of stream",
+            ));
+        }
+    };
     let cmd = Command::CreateStream {
         path: parse_path(&path)?,
         kind,
@@ -139,6 +146,77 @@ pub(super) async fn create_stream(
     };
     state.commit(access.name(), cmd).await?;
     Ok(Reply::Ok)
+}
+
+/// Refuses unless `access` may read every file `stream` has now.
+///
+/// A task stream starts with a copy of its parent's tree under its own
+/// path, where protections written for the parent's paths no longer apply,
+/// so making one must not hand a user files of the parent they cannot read.
+fn require_whole_tree(state: &State, access: &Access, stream: &DepotPath) -> Result<(), ErrorReply> {
+    let reader = state.reader()?;
+    let record = reader.stream(stream).map_err(meta_error)?;
+    let record = record.ok_or_else(|| not_found(format!("stream {stream}")))?;
+    let real_paths = reader.real_paths().map_err(meta_error)?;
+    let nodes = reader.nodes().map_err(meta_error)?;
+    for d in Dirs::new(&nodes)
+        .diff_paths(None, record.root)
+        .map_err(meta_error)?
+    {
+        let path = stream.join(&d.path).map_err(super::invalid)?;
+        let real = real_paths.real_path(&path).map_err(meta_error)?;
+        if !access.can(Level::Read, &path) || !access.can(Level::Read, &real) {
+            return Err(ErrorReply::new(
+                ErrorKind::Forbidden,
+                format!(
+                    "you cannot read every file of {stream}, so you cannot make a task stream of it; ask an administrator"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses unless every tree of `trees` is one that `stream` had, on its
+/// own or with its imports, as of some changelist: what
+/// [`resolve`] and [`integration`] hand out for it.
+///
+/// Diffs are filtered by the protections of the paths they would have in
+/// `stream`, which only holds for trees of `stream`; a tree of another
+/// stream would show its files under paths the user may read.
+///
+/// Meta keeps no index from trees to streams, so this walks the stream's
+/// history back from its head until every tree is found. Clients diff
+/// against recent trees, so the walk is usually short.
+fn require_stream_trees(
+    reader: &Reader,
+    stream: &DepotPath,
+    trees: &[TreeId],
+) -> Result<(), ErrorReply> {
+    let record = reader.stream(stream).map_err(meta_error)?;
+    let record = record.ok_or_else(|| not_found(format!("stream {stream}")))?;
+    let mut missing: Vec<TreeId> = trees
+        .iter()
+        .copied()
+        .filter(|t| *t != record.root && *t != record.base_root)
+        .collect();
+    let mut at = None;
+    while !missing.is_empty() {
+        let (cl, view) = reader.view_at(stream, at).map_err(meta_error)?;
+        let (_, own) = reader.stream_at(stream, at).map_err(meta_error)?;
+        missing.retain(|t| *t != view && *t != own);
+        match cl.0.checked_sub(1) {
+            Some(before) => at = Some(ClNumber(before)),
+            None => break,
+        }
+    }
+    match missing.first() {
+        None => Ok(()),
+        Some(tree) => Err(ErrorReply::new(
+            ErrorKind::Invalid,
+            format!("tree {tree} is not a revision of {stream}; sync again"),
+        )),
+    }
 }
 
 pub(super) fn list(state: &State, access: &Access) -> Response {
@@ -181,6 +259,8 @@ pub(super) async fn diff_tree(
     let state = state.clone();
     blocking(move || {
         let reader = state.reader()?;
+        let trees: Vec<TreeId> = from.into_iter().chain([to]).collect();
+        require_stream_trees(&reader, &stream, &trees)?;
         let real_paths = reader.real_paths().map_err(meta_error)?;
         let readable = |rel: &str| {
             stream.join(rel).is_ok_and(|p| {

@@ -173,7 +173,7 @@ async fn streams(state: &Arc<State>, access: Access, request: Request) -> Respon
             stream::set_typemap(state, &access, depot, source).await
         }
         Request::CreateStream { path, kind, parent } => {
-            stream::create_stream(state, &access, path, kind, parent).await
+            stream::create_stream(state, access, path, kind, parent).await
         }
         Request::ListStreams => stream::list(state, &access),
         Request::GetImports { stream } => stream::get_imports(state, &access, stream),
