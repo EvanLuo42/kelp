@@ -12,6 +12,7 @@ mod nodes;
 mod obliterate;
 mod proposal;
 mod reader;
+mod refold;
 mod replica;
 mod snapshot;
 mod streams;
@@ -92,7 +93,7 @@ const FORMAT: &str = "format_version";
 /// Logged commands are kept as they were encoded, so a change to
 /// [`Command`] also needs a migration that re-encodes the log; edges only
 /// replicate from a commit server with the same format.
-pub const FORMAT_VERSION: u64 = 9;
+pub const FORMAT_VERSION: u64 = 10;
 
 /// Converts a database from one format version to the next.
 type Migration = fn(&WriteTransaction) -> Result<()>;
@@ -116,6 +117,9 @@ const MIGRATIONS: &[Migration] = &[
     |_| Ok(()),
     // 9 adds user profiles and the owners of their addresses, likewise.
     |_| Ok(()),
+    // 10 folds names one character at a time, so keys with a final sigma
+    // and similar letters change.
+    refold::refold,
 ];
 const NEXT_CL: &str = "next_cl";
 const PROTECTIONS: &str = "protections";

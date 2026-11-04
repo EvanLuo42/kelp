@@ -66,7 +66,15 @@ fn folding_is_idempotent_and_refolds_old_keys() {
         // Stored keys are migrated by folding them again.
         assert_eq!(fold(&old_fold(&s)), once, "the old key of {c:?}");
     }
-    for s in ["ΑΣ", "ΣΑΣ", "ΟΔΟΣ ΕΝΑ", "Σ", "aΣ.b", "Ὀδυσσεύς", "cafe\u{301}"] {
+    for s in [
+        "ΑΣ",
+        "ΣΑΣ",
+        "ΟΔΟΣ ΕΝΑ",
+        "Σ",
+        "aΣ.b",
+        "Ὀδυσσεύς",
+        "cafe\u{301}",
+    ] {
         assert_eq!(fold(&old_fold(s)), fold(s), "{s}");
         assert_eq!(fold(&fold(s)), fold(s), "{s}");
     }
