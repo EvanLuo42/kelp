@@ -9,7 +9,7 @@
 //! A pack record is the 32-byte chunk id, the compressed length as a
 //! little-endian `u32`, and the zstd-compressed chunk.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -50,6 +50,11 @@ pub struct Compaction {
 }
 
 /// A [`BlobStore`] that packs small chunks; see the [module docs](self).
+///
+/// A packed chunk can be read as soon as it is stored, but
+/// [`has`](BlobStore::has) reports it only once a [`sync`](BlobStore::sync)
+/// made it durable, so that nobody skips storing a chunk that a failed sync
+/// may still lose.
 #[derive(Clone)]
 pub struct PackStore {
     inner: Arc<Inner>,
@@ -70,6 +75,32 @@ struct State {
     active: Option<(u32, File, u64)>,
     /// Chunks appended since the last sync.
     pending: HashMap<ChunkId, Location>,
+    /// Chunks whose pack failed to sync, so that they may not be on disk.
+    /// Until each is stored again or deleted, [`BlobStore::sync`] fails:
+    /// otherwise a caller whose chunks were dropped by another caller's
+    /// failed sync would be told they are durable.
+    lost: HashSet<ChunkId>,
+}
+
+impl State {
+    /// Gives up on the chunks appended to `pack` but not yet indexed, after
+    /// syncing it failed: the kernel may have dropped their data while a
+    /// retry would report success. The pack takes no more chunks.
+    fn fail_pack(&mut self, pack: u32) {
+        let lost: Vec<ChunkId> = self
+            .pending
+            .iter()
+            .filter(|(_, loc)| loc.0 == pack)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in lost {
+            self.pending.remove(&id);
+            self.lost.insert(id);
+        }
+        if self.active.as_ref().is_some_and(|(n, _, _)| *n == pack) {
+            self.active = None;
+        }
+    }
 }
 
 impl PackStore {
@@ -136,22 +167,34 @@ impl Inner {
         Ok(table.get(id.0.0.as_slice()).map_err(io)?.map(|v| v.value()))
     }
 
-    /// Like [`locate`](Self::locate) for many chunks, in one read transaction.
-    fn locate_all(&self, ids: &[ChunkId]) -> Result<Vec<Option<Location>>> {
-        let mut out: Vec<Option<Location>> = {
-            let state = self.state.lock().expect("pack lock");
-            ids.iter()
-                .map(|id| state.pending.get(id).copied())
-                .collect()
-        };
+    /// Returns where each of `ids` is indexed, in one read transaction.
+    ///
+    /// Unlike [`locate`](Self::locate), this leaves out chunks appended
+    /// since the last sync: they are not durable yet, and a caller that
+    /// skips storing a chunk because it is present relies on it staying.
+    fn locate_indexed(&self, ids: &[ChunkId]) -> Result<Vec<Option<Location>>> {
         let txn = self.index.begin_read().map_err(io)?;
         let table = txn.open_table(INDEX).map_err(io)?;
-        for (slot, id) in out.iter_mut().zip(ids) {
-            if slot.is_none() {
-                *slot = table.get(id.0.0.as_slice()).map_err(io)?.map(|v| v.value());
-            }
+        ids.iter()
+            .map(|id| Ok(table.get(id.0.0.as_slice()).map_err(io)?.map(|v| v.value())))
+            .collect()
+    }
+
+    /// Reads the chunk `id`, from a pack or else from the loose store.
+    fn get(&self, id: ChunkId) -> Result<Bytes> {
+        let Some(loc) = self.locate(id)? else {
+            return self.loose.read_chunk(id);
+        };
+        match self.read(id, loc) {
+            // Compaction may have moved the chunk to another pack and
+            // removed this one since it was located; look again.
+            Err(Error::Io(e)) => match self.locate(id)? {
+                Some(moved) if moved != loc => self.read(id, moved),
+                Some(_) => Err(Error::Io(e)),
+                None => self.loose.read_chunk(id),
+            },
+            result => result,
         }
-        Ok(out)
     }
 
     fn reader(&self, pack: u32) -> Result<Arc<File>> {
@@ -185,8 +228,12 @@ impl Inner {
             .as_ref()
             .is_none_or(|(_, _, len)| *len >= PACK_SIZE);
         if full {
-            if let Some((_, file, _)) = &state.active {
-                file.sync_data()?;
+            if let Some((pack, file, _)) = &state.active
+                && let Err(e) = file.sync_data()
+            {
+                let pack = *pack;
+                state.fail_pack(pack);
+                return Err(e.into());
             }
             let next = self.next_pack()?;
             let file = OpenOptions::new()
@@ -213,6 +260,7 @@ impl Inner {
         let location = (*pack, *len + RECORD_HEADER, compressed.len() as u32);
         *len += record.len() as u64;
         state.pending.insert(id, location);
+        state.lost.remove(&id);
         Ok(())
     }
 
@@ -231,7 +279,21 @@ impl Inner {
         Ok(highest + 1)
     }
 
+    /// Makes the chunks appended so far durable, and fails while chunks lost
+    /// to an earlier failed sync have not been stored again.
     fn sync(&self) -> Result<()> {
+        self.flush()?;
+        let state = self.state.lock().expect("pack lock");
+        match state.lost.len() {
+            0 => Ok(()),
+            n => Err(Error::Io(std::io::Error::other(format!(
+                "{n} chunks were lost when syncing a pack failed; store them again"
+            )))),
+        }
+    }
+
+    /// Syncs the active pack and indexes the chunks appended so far.
+    fn flush(&self) -> Result<()> {
         let mut state = self.state.lock().expect("pack lock");
         if state.pending.is_empty() {
             return Ok(());
@@ -239,11 +301,8 @@ impl Inner {
         if let Some((pack, file, _)) = &state.active
             && let Err(e) = file.sync_data()
         {
-            // After a failed fsync the kernel may have dropped the data while
-            // a retry reports success; give up on what was not yet indexed.
             let pack = *pack;
-            state.pending.retain(|_, loc| loc.0 != pack);
-            state.active = None;
+            state.fail_pack(pack);
             return Err(e.into());
         }
         let txn = self.index.begin_write().map_err(io)?;
@@ -259,7 +318,8 @@ impl Inner {
     }
 
     fn delete(&self, id: ChunkId) -> Result<bool> {
-        self.sync()?;
+        self.flush()?;
+        self.state.lock().expect("pack lock").lost.remove(&id);
         let txn = self.index.begin_write().map_err(io)?;
         let removed = {
             let mut index = txn.open_table(INDEX).map_err(io)?;
@@ -280,7 +340,7 @@ impl Inner {
     }
 
     fn packed_ids(&self) -> Result<Vec<ChunkId>> {
-        self.sync()?;
+        self.flush()?;
         let txn = self.index.begin_read().map_err(io)?;
         let table = txn.open_table(INDEX).map_err(io)?;
         let mut ids = Vec::with_capacity(table.len().map_err(io)? as usize);
@@ -294,7 +354,7 @@ impl Inner {
     }
 
     fn compact(&self) -> Result<Compaction> {
-        self.sync()?;
+        self.flush()?;
         let active = self
             .state
             .lock()
@@ -321,7 +381,7 @@ impl Inner {
             for (id, compressed) in self.live_records(pack)? {
                 self.append(id, &compressed)?;
             }
-            self.sync()?;
+            self.flush()?;
             let txn = self.index.begin_write().map_err(io)?;
             txn.open_table(DEAD).map_err(io)?.remove(pack).map_err(io)?;
             txn.commit().map_err(io)?;
@@ -372,7 +432,7 @@ impl BlobStore for PackStore {
     async fn has(&self, ids: &[ChunkId]) -> Result<Vec<bool>> {
         let mut out = Vec::with_capacity(ids.len());
         let mut loose = Vec::new();
-        for (i, location) in self.inner.locate_all(ids)?.into_iter().enumerate() {
+        for (i, location) in self.inner.locate_indexed(ids)?.into_iter().enumerate() {
             out.push(location.is_some());
             if location.is_none() {
                 loose.push((i, ids[i]));
@@ -390,13 +450,8 @@ impl BlobStore for PackStore {
     }
 
     async fn get(&self, id: ChunkId) -> Result<Bytes> {
-        match self.inner.locate(id)? {
-            Some(loc) => {
-                let inner = self.inner.clone();
-                blocking(move || inner.read(id, loc)).await
-            }
-            None => self.inner.loose.get(id).await,
-        }
+        let inner = self.inner.clone();
+        blocking(move || inner.get(id)).await
     }
 
     async fn put(&self, id: ChunkId, data: Bytes) -> Result<()> {
@@ -458,4 +513,45 @@ fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()
 
 fn io(e: impl std::fmt::Display) -> Error {
     Error::Io(std::io::Error::other(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk(n: u8) -> (ChunkId, Bytes) {
+        let data = Bytes::from(vec![n; 1_000]);
+        (ChunkId::of(&data), data)
+    }
+
+    #[tokio::test]
+    async fn chunks_lost_to_a_failed_sync_fail_later_syncs_until_stored_again() {
+        let sandbox = kelp_testkit::Sandbox::new();
+        let store = PackStore::open(sandbox.dir("store")).unwrap();
+        let (a, b) = (chunk(1), chunk(2));
+        store.put(a.0, a.1.clone()).await.unwrap();
+        assert_eq!(
+            store.has(&[a.0]).await.unwrap(),
+            [false],
+            "not reported before it is durable"
+        );
+        store.put(b.0, b.1.clone()).await.unwrap();
+
+        // What a failed fsync of the active pack does.
+        {
+            let mut state = store.inner.state.lock().unwrap();
+            let pack = state.active.as_ref().unwrap().0;
+            state.fail_pack(pack);
+        }
+        assert_eq!(store.has(&[a.0, b.0]).await.unwrap(), [false, false]);
+        assert!(store.sync().await.is_err());
+        assert!(store.sync().await.is_err(), "the failure sticks");
+
+        store.put(a.0, a.1.clone()).await.unwrap();
+        assert!(store.sync().await.is_err(), "b is still lost");
+        store.delete(b.0).await.unwrap();
+        store.sync().await.unwrap();
+        assert_eq!(store.has(&[a.0, b.0]).await.unwrap(), [true, false]);
+        assert_eq!(store.get(a.0).await.unwrap(), a.1);
+    }
 }
