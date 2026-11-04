@@ -3,6 +3,7 @@
 mod accounts;
 mod apply;
 mod artifacts;
+pub(crate) mod content_refs;
 mod gc;
 mod governance;
 mod imports;
@@ -26,6 +27,7 @@ use serde::de::DeserializeOwned;
 
 pub use accounts::SsoIdentity;
 use apply::Origin;
+pub use content_refs::ContentRef;
 pub use governance::webhooks;
 pub use imports::RealPaths;
 pub use nodes::ReadNodes;
@@ -81,6 +83,7 @@ const LABELS: TableDefinition<&str, Bytes> = TableDefinition::new("labels");
 const PROFILES: TableDefinition<&str, Bytes> = TableDefinition::new("profiles");
 const EMAIL_OWNERS: TableDefinition<&str, &str> = TableDefinition::new("email_owners");
 const MOVES: TableDefinition<(&str, u64), Bytes> = TableDefinition::new("moves");
+const CONTENT_REFS: TableDefinition<(&[u8], &str), ()> = TableDefinition::new("content_refs");
 
 const LAST_INDEX: &str = "last_index";
 const FORMAT: &str = "format_version";
@@ -92,7 +95,7 @@ const FORMAT: &str = "format_version";
 /// Logged commands are kept as they were encoded, so a change to
 /// [`Command`] also needs a migration that re-encodes the log; edges only
 /// replicate from a commit server with the same format.
-pub const FORMAT_VERSION: u64 = 9;
+pub const FORMAT_VERSION: u64 = 10;
 
 /// Converts a database from one format version to the next.
 type Migration = fn(&WriteTransaction) -> Result<()>;
@@ -116,6 +119,8 @@ const MIGRATIONS: &[Migration] = &[
     |_| Ok(()),
     // 9 adds user profiles and the owners of their addresses, likewise.
     |_| Ok(()),
+    // 10 indexes where content appears, so reads of it can be checked.
+    content_refs::backfill,
 ];
 const NEXT_CL: &str = "next_cl";
 const PROTECTIONS: &str = "protections";
@@ -224,6 +229,7 @@ impl MetaDb {
         txn.open_table(MOVES)?;
         txn.open_table(PROFILES)?;
         txn.open_table(EMAIL_OWNERS)?;
+        txn.open_table(CONTENT_REFS)?;
         txn.commit()?;
         Ok(Self { db })
     }

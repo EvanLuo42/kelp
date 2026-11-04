@@ -47,6 +47,13 @@ impl MetaFixture {
         &self.db
     }
 
+    /// Closes the database and returns the sandbox that holds its file,
+    /// `meta.redb`.
+    pub fn close(self) -> Sandbox {
+        drop(self.db);
+        self._sandbox
+    }
+
     /// Creates a stream of `kind` under `parent`.
     ///
     /// # Panics

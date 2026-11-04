@@ -14,7 +14,7 @@ mod webhook;
 use std::sync::{Arc, Mutex};
 
 use kelp_client::Connection;
-use kelp_core::DepotPath;
+use kelp_core::{ContentId, DepotPath};
 use kelp_meta::acl::{Level, Protections, Role, Subject};
 use kelp_meta::db::Reader;
 use kelp_meta::record::User;
@@ -224,6 +224,23 @@ impl Access {
             )),
         }
     }
+
+    /// Returns `true` if the user may read every path, so reading content
+    /// by its hash needs no check of where it appears.
+    fn reads_everything(&self) -> bool {
+        self.user.admin || self.user.replica || self.table.reads_everything(self.subject())
+    }
+
+    /// Returns `true` if the user may read `content`: it appears at a path
+    /// they can read, in an artifact of a stream they see, or in a plugin.
+    fn reads_content(&self, reader: &Reader, content: &ContentId) -> Result<bool, ErrorReply> {
+        if self.reads_everything() {
+            return Ok(true);
+        }
+        reader
+            .content_visible(content, |p| self.can(Level::Read, p), |s| self.sees(s))
+            .map_err(meta_error)
+    }
 }
 
 pub async fn serve_connection(state: Arc<State>, conn: quinn::Connection) {
@@ -395,7 +412,7 @@ async fn hello_reply(
         version,
         role: state.server_role(),
         log_index: reader.last_index().map_err(internal)?.0,
-        capabilities: Capabilities::default(),
+        capabilities: Capabilities::CONTENT_ACCESS,
         user: name,
     })
 }

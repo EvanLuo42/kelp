@@ -80,3 +80,38 @@ fn users_that_single_sign_on_created_link_on_their_next_sign_on() {
         "service accounts stay unlinked"
     );
 }
+
+#[test]
+fn opening_a_format_9_database_indexes_where_content_appears() {
+    use kelp_core::ContentId;
+    use kelp_meta::db::ContentRef;
+    use kelp_testkit::depot_path as p;
+    use kelp_testkit::meta::MetaFixture;
+
+    let f = MetaFixture::new();
+    f.submit("//game/main", vec![f.add("//game/main/a.txt", b"a")])
+        .unwrap();
+    let content = ContentId::of(b"a");
+    let sandbox = f.close();
+    let path = sandbox.path("meta.redb");
+    {
+        let raw = redb::Database::create(&path).unwrap();
+        let txn = raw.begin_write().unwrap();
+        txn.open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+            .unwrap()
+            .insert("format_version", 9)
+            .unwrap();
+        txn.delete_table(redb::TableDefinition::<(&[u8], &str), ()>::new(
+            "content_refs",
+        ))
+        .unwrap();
+        txn.commit().unwrap();
+    }
+    let db = MetaDb::open(&path).unwrap();
+    let r = db.read().unwrap();
+    assert_eq!(r.format_version().unwrap(), FORMAT_VERSION);
+    assert_eq!(
+        r.content_refs(&content).unwrap(),
+        vec![ContentRef::File(p("//game/main/a.txt"))]
+    );
+}

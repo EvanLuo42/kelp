@@ -490,6 +490,18 @@ pub enum Request {
         /// The encoded request of `rpc`.
         payload: Vec<u8>,
     },
+    /// Downloads chunks `ids`, each a chunk of the manifest of one of
+    /// `contents`, sent as [`MsgType::Chunk`](crate::MsgType::Chunk) frames
+    /// before the reply.
+    ///
+    /// Unlike [`GetChunks`](Self::GetChunks), naming the content lets the
+    /// server check that the user may read a path the content appears at.
+    /// Servers that offer it advertise
+    /// [`Capabilities::CONTENT_ACCESS`](crate::Capabilities::CONTENT_ACCESS).
+    GetContentChunks {
+        contents: Vec<ContentId>,
+        ids: Vec<ChunkId>,
+    },
 }
 
 /// What a request does, which decides where it is handled.
@@ -572,6 +584,7 @@ impl Request {
             | Self::DiffTree { .. }
             | Self::GetChunks { .. }
             | Self::GetManifests { .. }
+            | Self::GetContentChunks { .. }
             | Self::Filelog { .. }
             | Self::Changes { .. }
             | Self::Describe { .. }
@@ -699,6 +712,7 @@ impl Request {
             Self::SetDisabled { .. } => "SetDisabled",
             Self::EditProfile { .. } => "EditProfile",
             Self::Raft { .. } => "Raft",
+            Self::GetContentChunks { .. } => "GetContentChunks",
         }
     }
 }

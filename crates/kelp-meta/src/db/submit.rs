@@ -502,6 +502,9 @@ fn record_revisions(txn: &WriteTransaction, cl: ClNumber, changes: &[FileChange]
             purged: false,
         };
         revisions.insert((key, last + 1), enc(&rev).as_slice())?;
+        if let Some(content) = content {
+            super::content_refs::add(txn, &content, &super::ContentRef::File(change.path.clone()))?;
+        }
     }
     Ok(())
 }

@@ -318,6 +318,12 @@ pub(super) fn apply(txn: &WriteTransaction, cmd: &Command, origin: Origin) -> Re
             };
             shelves.insert(cl.0, enc(&shelf).as_slice())?;
             drop((shelves, meta, manifests));
+            for file in &contents.files {
+                if let Some(data) = file.action.data() {
+                    let place = super::ContentRef::File(file.path.clone());
+                    super::content_refs::add(txn, &data.content, &place)?;
+                }
+            }
             super::governance::reviews::shelved(txn, &shelf)?;
         }
         Command::DeleteShelf { cl } => {

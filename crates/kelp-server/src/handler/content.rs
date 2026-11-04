@@ -9,7 +9,7 @@ use kelp_proto::{ErrorKind, ErrorReply, MsgType, Reply};
 use quinn::{RecvStream, SendStream};
 use tokio::task::JoinSet;
 
-use super::{Response, check_batch, internal, invalid, meta_error};
+use super::{Access, Response, check_batch, internal, invalid, meta_error};
 use crate::State;
 
 const PARALLEL_WRITES: usize = 16;
@@ -106,15 +106,62 @@ pub(super) async fn put_manifests(state: &State, manifests: Vec<FileManifest>) -
     Ok(Reply::Ok)
 }
 
-pub(super) fn get_manifests(state: &State, ids: Vec<ContentId>) -> Response {
+/// Returns the manifests of `ids`, leaving out content the user may not
+/// read as if the server lacked it.
+pub(super) fn get_manifests(state: &State, access: &Access, ids: Vec<ContentId>) -> Response {
     check_batch(ids.len())?;
     let reader = state.reader()?;
-    let manifests = ids
-        .iter()
-        .map(|id| reader.manifest(id))
-        .collect::<Result<_, _>>()
-        .map_err(meta_error)?;
+    let mut manifests = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let manifest = match access.reads_content(&reader, id)? {
+            true => reader.manifest(id).map_err(meta_error)?,
+            false => None,
+        };
+        manifests.push(manifest);
+    }
     Ok(Reply::Manifests(manifests))
+}
+
+/// Refuses chunks named by their ids alone to a user who may not read
+/// everything, since the server cannot tell what content they belong to.
+pub(super) fn require_reads_everything(access: &Access) -> Result<(), ErrorReply> {
+    match access.reads_everything() {
+        true => Ok(()),
+        false => Err(ErrorReply::new(
+            ErrorKind::Forbidden,
+            "this server checks read permission on content; upgrade Kelp to download it",
+        )),
+    }
+}
+
+/// Checks that each of `ids` is a chunk of one of `contents` and that the
+/// user may read that content.
+pub(super) fn check_content_chunks(
+    state: &State,
+    access: &Access,
+    contents: &[ContentId],
+    ids: &[ChunkId],
+) -> Result<(), ErrorReply> {
+    if access.reads_everything() {
+        return Ok(());
+    }
+    let reader = state.reader()?;
+    let mut allowed = std::collections::HashSet::new();
+    for content in contents {
+        let manifest = match access.reads_content(&reader, content)? {
+            true => reader.manifest(content).map_err(meta_error)?,
+            false => None,
+        };
+        let manifest = manifest.ok_or_else(|| super::not_found(format!("content {content}")))?;
+        allowed.extend(manifest.chunks.iter().map(|c| c.id));
+    }
+    match ids.iter().find(|id| !allowed.contains(id)) {
+        None => Ok(()),
+        Some(id) => Err(ErrorReply::new(
+            ErrorKind::Forbidden,
+            format!("chunk {id} is not part of the content named with it"),
+        )),
+    }
 }
 
 async fn verify_manifest(state: &State, manifest: &FileManifest) -> Result<(), ErrorReply> {

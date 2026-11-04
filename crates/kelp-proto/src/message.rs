@@ -51,6 +51,10 @@ impl Capabilities {
     pub const WASM_PLUGINS: Self = Self(1 << 2);
     /// zstd-compressed frame payloads.
     pub const ZSTD_FRAMES: Self = Self(1 << 3);
+    /// Checking read permission on content: the server answers
+    /// [`GetContentChunks`](crate::Request::GetContentChunks), and holds back
+    /// manifests and chunks of content the user may not read.
+    pub const CONTENT_ACCESS: Self = Self(1 << 4);
 
     /// Returns `true` if all capabilities in `other` are present in `self`.
     pub fn contains(self, other: Self) -> bool {

@@ -100,6 +100,10 @@ pub(super) fn publish(
     txn.open_table(ARTIFACT_INDEX)?
         .insert((stream.as_str(), name.as_str(), contents.cl.0, id), ())?;
     txn.open_table(META)?.insert(NEXT_ARTIFACT, id + 1)?;
+    let place = super::ContentRef::Artifact(contents.stream.clone());
+    for (_, data) in &contents.files {
+        super::content_refs::add(txn, &data.content, &place)?;
+    }
 
     enforce_retention(txn, &stream, &name)
 }

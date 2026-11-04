@@ -127,6 +127,102 @@ async fn service_accounts_use_issued_tokens() {
     );
 }
 
+/// Submits `files` to `//game/main` as `conn`'s user from a new workspace.
+async fn submit_files(server: &TestServer, conn: &Connection, files: &[(&str, &str)]) {
+    let client = TestClient::new();
+    let mut ws = client.create_workspace(server, "ws", &depot_path("//game/main"));
+    for (path, text) in files {
+        client.sandbox().write(&format!("ws/{path}"), text);
+    }
+    ws.reconcile(conn).await.unwrap();
+    ws.submit(
+        conn,
+        &client.cache(),
+        LocalClId::DEFAULT,
+        Some("files".into()),
+    )
+    .await
+    .unwrap();
+}
+
+async fn manifest_of(conn: &Connection, text: &str) -> Option<kelp_core::FileManifest> {
+    let request = Request::GetManifests {
+        ids: vec![kelp_core::ContentId::of(text.as_bytes())],
+    };
+    let Reply::Manifests(mut found) = conn.call(&request).await.unwrap() else {
+        panic!("expected manifests");
+    };
+    found.pop().unwrap()
+}
+
+#[tokio::test]
+async fn content_is_read_only_through_paths_the_user_can_read() {
+    let server = TestServer::start().await;
+    server.create_depot("game").await;
+    let (alice, bob) = (server.add_user("alice").await, server.add_user("bob").await);
+    let table = "write * //...\nnone user:bob //game/main/Secret/...\nnone user:bob //game/main/Early/...\nread user:bob //game/dev/...\nnone user:bob //game/dev/Secret/...\n";
+    server
+        .admin(Request::SetProtections {
+            source: table.into(),
+        })
+        .await;
+    submit_files(
+        &server,
+        &alice,
+        &[
+            ("Secret/plan.txt", "the plan"),
+            ("Art/tree.txt", "a tree"),
+            ("Early/x.txt", "inherited"),
+        ],
+    )
+    .await;
+    server
+        .admin(Request::CreateStream {
+            path: "//game/dev".into(),
+            kind: kelp_proto::rpc::StreamKind::Development,
+            parent: Some("//game/main".into()),
+        })
+        .await;
+
+    let plan = manifest_of(&alice, "the plan")
+        .await
+        .expect("alice reads it");
+    assert_eq!(
+        manifest_of(&bob, "the plan").await,
+        None,
+        "held back like missing content"
+    );
+    let tree = manifest_of(&bob, "a tree")
+        .await
+        .expect("bob reads the tree");
+    assert!(
+        manifest_of(&bob, "inherited").await.is_some(),
+        "dev started with it, and bob reads dev"
+    );
+
+    let chunk = |m: &kelp_core::FileManifest| (m.chunks[0].id, m.content);
+    let err = bob.get_chunks(&[plan.chunks[0].id]).await.unwrap_err();
+    assert!(
+        matches!(err, Error::Remote(ref e) if e.kind == ErrorKind::Forbidden),
+        "{err}"
+    );
+    assert!(bob.get_content_chunks(&[chunk(&plan)]).await.is_err());
+    let lying = [(plan.chunks[0].id, tree.content)];
+    let err = bob.get_content_chunks(&lying).await.unwrap_err();
+    assert!(
+        matches!(err, Error::Remote(ref e) if e.kind == ErrorKind::Forbidden),
+        "{err}"
+    );
+    assert_eq!(
+        bob.get_content_chunks(&[chunk(&tree)]).await.unwrap().len(),
+        1
+    );
+    assert_eq!(
+        alice.get_chunks(&[plan.chunks[0].id]).await.unwrap().len(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn depot_administrators_and_roles_hold_part_of_the_powers() {
     let server = TestServer::start().await;
