@@ -43,3 +43,41 @@ async fn concurrent_puts_of_the_same_chunk_all_succeed() {
         }
     }
 }
+
+fn object_path(sandbox: &Sandbox, dir: &str, id: ChunkId) -> std::path::PathBuf {
+    let hex = id.to_string();
+    sandbox.path(&format!("{dir}/{}/{}/{hex}", &hex[..2], &hex[2..4]))
+}
+
+#[tokio::test]
+async fn a_corrupt_cached_chunk_is_replaced_or_removed() {
+    let sandbox = Sandbox::new();
+    let store = FsBlobStore::cache(sandbox.dir("cache"));
+    let data = Bytes::from(vec![7u8; 10_000]);
+    let id = ChunkId::of(&data);
+    let path = object_path(&sandbox, "cache", id);
+
+    // A crash can leave part of an unsynced chunk behind; putting it again
+    // replaces it.
+    store.put(id, data.clone()).await.unwrap();
+    std::fs::write(&path, b"torn").unwrap();
+    store.put(id, data.clone()).await.unwrap();
+    assert_eq!(store.get(id).await.unwrap(), data);
+
+    // Reading it removes it, so that it is fetched again.
+    std::fs::write(&path, b"torn").unwrap();
+    assert!(matches!(store.get(id).await, Err(Error::Corrupt(_))));
+    assert_eq!(store.has(&[id]).await.unwrap(), vec![false]);
+}
+
+#[tokio::test]
+async fn a_durable_store_keeps_a_corrupt_chunk() {
+    let sandbox = Sandbox::new();
+    let store = FsBlobStore::new(sandbox.dir("chunks"));
+    let data = Bytes::from(vec![7u8; 10_000]);
+    let id = ChunkId::of(&data);
+    store.put(id, data).await.unwrap();
+    std::fs::write(object_path(&sandbox, "chunks", id), b"torn").unwrap();
+    assert!(matches!(store.get(id).await, Err(Error::Corrupt(_))));
+    assert_eq!(store.has(&[id]).await.unwrap(), vec![true]);
+}

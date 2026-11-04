@@ -149,25 +149,53 @@ impl FsBlobStore {
     ///
     /// Returns [`Error::NotFound`] if the chunk is absent, [`Error::Corrupt`]
     /// if it does not match its id, or [`Error::Io`] if it cannot be read.
+    ///
+    /// A store created with [`cache`](Self::cache) removes a chunk it finds
+    /// corrupt, which is what a crash can leave behind there, so that
+    /// [`has`](BlobStore::has) stops reporting it and it is fetched again.
     pub fn read_chunk(&self, id: ChunkId) -> Result<Bytes> {
-        let compressed = match std::fs::read(self.object_path(id)) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(Error::NotFound(id));
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let data = decompress(&compressed).map_err(|_| Error::Corrupt(id))?;
-        if ChunkId::of(&data) != id {
-            return Err(Error::Corrupt(id));
+        let path = self.object_path(id);
+        let result = read_verified(&path, id);
+        if !self.durable && matches!(result, Err(Error::Corrupt(_))) {
+            let _ = std::fs::remove_file(&path);
         }
-        Ok(data.into())
+        result
     }
 
     fn object_path(&self, id: ChunkId) -> PathBuf {
         let hex = id.to_string();
         self.root.join(&hex[0..2]).join(&hex[2..4]).join(hex)
     }
+
+    /// Returns whether a chunk file already in place can be kept rather
+    /// than written again.
+    ///
+    /// A durable store syncs each chunk before renaming it into place, so
+    /// only an empty file, left by a crash before the data reached the disk,
+    /// is suspect. A cache does not sync, so a crash can leave any part of
+    /// a chunk behind; it checks the content.
+    fn keep_existing(path: &Path, id: ChunkId, durable: bool) -> bool {
+        match durable {
+            true => std::fs::metadata(path).is_ok_and(|m| m.len() > 0),
+            false => read_verified(path, id).is_ok(),
+        }
+    }
+}
+
+/// Reads, decompresses and verifies the chunk `id` stored at `path`.
+fn read_verified(path: &Path, id: ChunkId) -> Result<Bytes> {
+    let compressed = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::NotFound(id));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let data = decompress(&compressed).map_err(|_| Error::Corrupt(id))?;
+    if ChunkId::of(&data) != id {
+        return Err(Error::Corrupt(id));
+    }
+    Ok(data.into())
 }
 
 impl BlobStore for FsBlobStore {
@@ -190,9 +218,7 @@ impl BlobStore for FsBlobStore {
     async fn put(&self, id: ChunkId, data: Bytes) -> Result<()> {
         let (path, level, durable) = (self.object_path(id), self.level, self.durable);
         blocking(move || {
-            // An empty file is what a crash before the data reached the
-            // disk leaves behind; replace it rather than trust it.
-            if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+            if Self::keep_existing(&path, id, durable) {
                 return Ok(());
             }
             let dir = path.parent().expect("object path has parent");
@@ -215,7 +241,7 @@ impl BlobStore for FsBlobStore {
                 let _ = std::fs::remove_file(&tmp);
                 // A concurrent put of the same chunk got there first; on
                 // Windows, replacing its file can fail while it is open.
-                if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
+                if Self::keep_existing(&path, id, durable) {
                     return Ok(());
                 }
                 return Err(e.into());
