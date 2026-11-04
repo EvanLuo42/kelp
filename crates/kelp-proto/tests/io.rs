@@ -53,3 +53,41 @@ async fn truncated_frame_is_an_error() {
         Err(Error::UnexpectedEof)
     ));
 }
+
+#[tokio::test]
+async fn a_large_claimed_payload_that_never_arrives_is_an_error() {
+    use kelp_proto::{Flags, FrameHeader, MAX_PAYLOAD};
+    let (mut client, mut server) = tokio::io::duplex(1024);
+    let header = FrameHeader {
+        flags: Flags::RAW,
+        msg_type: MsgType::Chunk,
+        request_id: 0,
+        payload_len: MAX_PAYLOAD,
+    };
+    tokio::io::AsyncWriteExt::write_all(&mut client, &header.encode())
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut client, b"only a few bytes")
+        .await
+        .unwrap();
+    drop(client);
+    assert!(matches!(
+        read_frame(&mut server).await,
+        Err(Error::UnexpectedEof)
+    ));
+}
+
+#[tokio::test]
+async fn payloads_larger_than_the_first_allocation_round_trip() {
+    let (mut client, mut server) = tokio::io::duplex(1 << 16);
+    let data = kelp_testkit::pseudo_random(1 << 20, 7);
+    let id = ChunkId::of(&data);
+    let writer = tokio::spawn(async move {
+        write_chunk(&mut client, &id.0.0, &data).await.unwrap();
+        data
+    });
+    let frame = expect_frame(&mut server).await.unwrap();
+    let data = writer.await.unwrap();
+    let (got_id, got) = split_chunk(&frame.payload).unwrap();
+    assert_eq!((got_id, got), (id.0.0, data.as_slice()));
+}
