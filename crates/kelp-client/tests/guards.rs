@@ -271,6 +271,46 @@ async fn restoring_a_snapshot_restores_its_moves() {
 }
 
 #[tokio::test]
+async fn a_file_where_a_directory_goes_skips_only_what_is_below() {
+    let s = setup(&[("a.txt", "a\n")]).await;
+    let other = TestClient::new();
+    let mut ws = other.create_workspace(&s.server, "ws", &stream());
+    ws.sync(&s.conn, &other.cache(), None).await.unwrap();
+
+    let mut author = s.ws;
+    s.client.sandbox().write("ws/Data/x.txt", "x\n");
+    s.client.sandbox().write("ws/b.txt", "b\n");
+    author.reconcile(&s.conn).await.unwrap();
+    author
+        .submit(
+            &s.conn,
+            &s.client.cache(),
+            LocalClId::DEFAULT,
+            Some("more".into()),
+        )
+        .await
+        .unwrap();
+
+    other.sandbox().write("ws/Data", "my notes\n");
+    let report = ws.sync(&s.conn, &other.cache(), None).await.unwrap();
+    assert_eq!(report.updated, [path("b.txt")]);
+    assert_eq!(
+        report.skipped,
+        [(path("Data/x.txt"), SkipReason::LocallyModified)]
+    );
+    assert_eq!(other.sandbox().read("ws/Data"), b"my notes\n");
+    let saved = State::load(&other.workspace_root("ws")).unwrap();
+    assert_eq!(saved.have_cl, report.cl);
+    assert!(saved.dirty.contains(&path("Data/x.txt")));
+    assert!(saved.have.contains_key(&path("b.txt")));
+
+    std::fs::remove_file(other.sandbox().path("ws/Data")).unwrap();
+    let report = ws.sync(&s.conn, &other.cache(), None).await.unwrap();
+    assert_eq!(report.updated, [path("Data/x.txt")]);
+    assert_eq!(other.sandbox().read("ws/Data/x.txt"), b"x\n");
+}
+
+#[tokio::test]
 async fn tracked_files_that_become_ignored_are_not_deleted() {
     let mut s = setup(&[("a.txt", "a\n"), ("Saved/log.txt", "log\n")]).await;
     s.client.sandbox().write("ws/.kelpignore", "Saved/\n");

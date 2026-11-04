@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use kelp_core::{ContentId, DepotPath};
 use kelp_workspace::ignore::is_meta_path;
@@ -221,7 +222,7 @@ impl Workspace {
                 match target {
                     Some(t) => {
                         // The bytes are counted as they are written.
-                        cache
+                        let written = cache
                             .materialize_metered(
                                 &t.content,
                                 t.executable,
@@ -229,7 +230,20 @@ impl Workspace {
                                 &tmp,
                                 Some(&mut meter),
                             )
-                            .await?;
+                            .await;
+                        if let Err(e) = written {
+                            // A file where a directory has to go, kept by a
+                            // skipped deletion or never tracked, is a
+                            // conflict like any other, not a failed sync.
+                            // Unix reports it before this, as an error
+                            // checking for overwrites; Windows only here.
+                            if blocked(&self.root, &abs) {
+                                meter.add(1, 0);
+                                report.skipped.push((path, SkipReason::LocallyModified));
+                                continue;
+                            }
+                            return Err(e);
+                        }
                         meter.add(1, 0);
                         set_read_only(&abs, self.is_exclusive(&path))?;
                         self.record_have(&path, version(t))?;
@@ -257,4 +271,14 @@ impl Workspace {
         self.save()?;
         Ok(report)
     }
+}
+
+/// Returns `true` if something other than a directory is where a directory
+/// above `abs`, below `root`, has to go.
+fn blocked(root: &Path, abs: &Path) -> bool {
+    abs.ancestors()
+        .skip(1)
+        .take_while(|dir| *dir != root && dir.starts_with(root))
+        .find_map(|dir| std::fs::symlink_metadata(dir).ok())
+        .is_some_and(|meta| !meta.is_dir())
 }
