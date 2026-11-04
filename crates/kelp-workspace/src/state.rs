@@ -347,10 +347,33 @@ impl State {
                 for step in &MIGRATIONS[version as usize - 1..] {
                     payload = step(payload)?;
                 }
-                postcard::from_bytes(&payload).map_err(|e| corrupt(e.to_string()))
+                let mut state: Self =
+                    postcard::from_bytes(&payload).map_err(|e| corrupt(e.to_string()))?;
+                if let Ok(written) = fs::metadata(&path).and_then(|m| m.modified()) {
+                    state.distrust_racy(nanos_since_epoch(written));
+                }
+                Ok(state)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Forgets the modification times of files that may have changed in the
+    /// same tick of the file system's clock as the state was written at
+    /// `written`, so the next status hashes them instead of trusting them.
+    ///
+    /// The state file lives on the same file system as the workspace, so a
+    /// file changed after the state was written carries a time no earlier
+    /// than the state's, at the file system's granularity and by its clock.
+    /// Only a recorded time at or after `written` can therefore hide a later
+    /// change. This covers coarse timestamps, such as FAT's two seconds, and
+    /// file servers whose clocks differ from this machine's.
+    fn distrust_racy(&mut self, written: u64) {
+        for have in self.have.values_mut() {
+            if have.mtime >= written {
+                have.mtime = 0;
+            }
         }
     }
 
@@ -365,6 +388,11 @@ impl State {
         bytes.extend(postcard::to_allocvec(self).expect("state serializes"));
         write_atomic(&meta_path(root, STATE_FILE), &bytes)
     }
+}
+
+fn nanos_since_epoch(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64)
 }
 
 fn meta_path(root: &Path, file: &str) -> PathBuf {

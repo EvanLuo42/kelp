@@ -119,3 +119,30 @@ fn version_one_state_gains_an_empty_list_of_moves() {
     assert_eq!(loaded.have_cl, 42);
     assert!(loaded.moves.is_empty());
 }
+
+#[test]
+fn times_not_older_than_the_state_file_are_not_trusted() {
+    let sandbox = Sandbox::new();
+    let root = sandbox.dir("ws");
+    let entry = |local: &str, mtime| HaveEntry {
+        local: local.into(),
+        content: ContentId::of(b"x"),
+        size: 1,
+        executable: false,
+        mtime,
+    };
+    let (old, racy) = (
+        depot_path("//game/main/old.txt"),
+        depot_path("//game/main/racy.txt"),
+    );
+    let mut state = State::default();
+    state.have.insert(old.clone(), entry("old.txt", 1));
+    // A time in the future stands for a file changed in the same tick of a
+    // coarse clock as the state file, or by a file server ahead of us.
+    state.have.insert(racy.clone(), entry("racy.txt", u64::MAX));
+    state.save(&root).unwrap();
+
+    let loaded = State::load(&root).unwrap();
+    assert_eq!(loaded.have[&old].mtime, 1);
+    assert_eq!(loaded.have[&racy].mtime, 0);
+}
