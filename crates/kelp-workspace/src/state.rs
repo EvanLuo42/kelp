@@ -23,7 +23,7 @@ const STATE_MAGIC: &[u8; 8] = b"KELPWS\0\0";
 ///
 /// Every change to how [`State`] is encoded must increase it and add a step
 /// to [`MIGRATIONS`].
-pub const STATE_VERSION: u32 = 2;
+pub const STATE_VERSION: u32 = 3;
 
 /// Converts encoded state from one version to the next.
 type Migration = fn(Vec<u8>) -> Result<Vec<u8>>;
@@ -31,6 +31,11 @@ type Migration = fn(Vec<u8>) -> Result<Vec<u8>>;
 /// The migration from version `i + 1` to `i + 2` is at index `i`.
 const MIGRATIONS: &[Migration] = &[
     // 2 appends `moves`; an empty map encodes as one zero byte.
+    |mut payload| {
+        payload.push(0);
+        Ok(payload)
+    },
+    // 3 appends `snapshot_moves`, likewise empty.
     |mut payload| {
         payload.push(0);
         Ok(payload)
@@ -302,6 +307,10 @@ pub struct State {
     /// [`OpenAction::MoveTo`]: crate::OpenAction::MoveTo
     /// [`OpenAction::MoveFrom`]: crate::OpenAction::MoveFrom
     pub moves: BTreeMap<DepotPath, DepotPath>,
+    /// The opened moves among the files of each snapshot, by
+    /// [`Snapshot::id`], as in [`State::moves`]. Snapshots without moves,
+    /// and those taken before Kelp recorded this, have no entry.
+    pub snapshot_moves: BTreeMap<u32, BTreeMap<DepotPath, DepotPath>>,
 }
 
 /// A build artifact the workspace has.
@@ -352,6 +361,20 @@ impl State {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Returns when the state of the workspace rooted at `root` was last
+    /// saved, in nanoseconds since the Unix epoch, or `None` if it never was.
+    ///
+    /// This is the modification time of the state file, so it comes from the
+    /// same clock, at the same granularity, as the times of the files in the
+    /// workspace.
+    pub fn saved_at(root: &Path) -> Option<u64> {
+        let modified = fs::metadata(meta_path(root, STATE_FILE))
+            .and_then(|m| m.modified())
+            .ok()?;
+        let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some(since.as_nanos() as u64)
     }
 
     /// Writes the state of the workspace rooted at `root`.

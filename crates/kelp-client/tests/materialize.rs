@@ -157,6 +157,60 @@ async fn missing_manifest_is_not_cached() {
 }
 
 #[tokio::test]
+async fn chunks_that_do_not_make_up_the_content_are_refused() {
+    for size in [LARGE, 2 << 20] {
+        let fx = Fixture::new();
+        let real = pseudo_random(size, 21);
+        let other = fx.ingest(&pseudo_random(size, 22)).await;
+        // A manifest that claims `real` but lists the chunks of `other`.
+        let forged = FileManifest {
+            content: ContentId::of(&real),
+            size: other.size,
+            chunks: other.chunks.clone(),
+        };
+        fx.cache.put_manifest(&forged).unwrap();
+        let dest = fx.dest("big.bin");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"old").unwrap();
+
+        let err = materialize(&fx, &forged.content, false, "big.bin")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err:?}");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+        assert!(fx.leftovers().is_empty(), "{:?}", fx.leftovers());
+        assert!(
+            fx.cache.manifest(&forged.content).unwrap().is_none(),
+            "the bad manifest is forgotten, to be fetched again"
+        );
+
+        fx.cache.put_manifest(&forged).unwrap();
+        assert!(fx.cache.read(&forged.content).await.is_err());
+        assert!(fx.cache.manifest(&forged.content).unwrap().is_none());
+    }
+}
+
+#[tokio::test]
+async fn a_cached_manifest_of_other_content_is_not_used() {
+    let fx = Fixture::new();
+    let other = fx.ingest(&pseudo_random(2 << 20, 23)).await;
+    let wanted = ContentId::of(b"something else");
+    let file = |c: &ContentId| {
+        let hex = c.to_string();
+        fx.sandbox
+            .root()
+            .join("cache/manifests")
+            .join(&hex[..2])
+            .join(hex)
+    };
+    std::fs::create_dir_all(file(&wanted).parent().unwrap()).unwrap();
+    std::fs::copy(file(&other.content), file(&wanted)).unwrap();
+    assert!(fx.cache.manifest(&wanted).unwrap().is_none());
+    assert!(!file(&wanted).exists());
+    assert_eq!(fx.cache.manifest(&other.content).unwrap(), Some(other));
+}
+
+#[tokio::test]
 async fn corrupt_chunk_keeps_the_existing_file() {
     let fx = Fixture::new();
     let data = pseudo_random(LARGE, 5);

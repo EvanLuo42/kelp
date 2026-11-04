@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use kelp_core::{ContentId, DepotPath};
+use kelp_workspace::ignore::is_meta_path;
 use kelp_workspace::{Resolve, ResolveKind};
 
 use super::{ArtifactUpdate, ProjectedFile, Workspace, version};
@@ -15,7 +17,8 @@ pub enum SkipReason {
     Opened,
     /// The file was changed on disk without being opened.
     LocallyModified,
-    /// A file not known to the workspace is in the way.
+    /// A file not known to the workspace is in the way, or the file would
+    /// land in a directory reserved for Kelp's own files.
     Untracked,
 }
 
@@ -112,6 +115,12 @@ impl Workspace {
             if have.map(|h| h.content) == target.map(|t| t.content) {
                 continue;
             }
+            if is_meta_path(&local) {
+                // Writing there could replace Kelp's own files, or plant a
+                // workspace inside this one.
+                report.skipped.push((path, SkipReason::Untracked));
+                continue;
+            }
             if self.state.pending.action(&path).is_some() {
                 if self
                     .state
@@ -136,7 +145,7 @@ impl Workspace {
             let abs = self.abs(&local);
             let entry = self.state.have.get(&path);
             match entry {
-                Some(h) if abs.exists() && !file_matches(&abs, h)? => match target {
+                Some(h) if abs.exists() && !file_matches(&abs, h, self.recorded())? => match target {
                     // An interrupted sync may have written it already.
                     Some(t) if content_of(&abs).is_ok_and(|c| c == t.content) => {
                         self.record_have(&path, version(t))?;
@@ -213,7 +222,7 @@ impl Workspace {
                 match target {
                     Some(t) => {
                         // The bytes are counted as they are written.
-                        cache
+                        let written = cache
                             .materialize_metered(
                                 &t.content,
                                 t.executable,
@@ -221,7 +230,20 @@ impl Workspace {
                                 &tmp,
                                 Some(&mut meter),
                             )
-                            .await?;
+                            .await;
+                        if let Err(e) = written {
+                            // A file where a directory has to go, kept by a
+                            // skipped deletion or never tracked, is a
+                            // conflict like any other, not a failed sync.
+                            // Unix reports it before this, as an error
+                            // checking for overwrites; Windows only here.
+                            if blocked(&self.root, &abs) {
+                                meter.add(1, 0);
+                                report.skipped.push((path, SkipReason::LocallyModified));
+                                continue;
+                            }
+                            return Err(e);
+                        }
                         meter.add(1, 0);
                         set_read_only(&abs, self.is_exclusive(&path))?;
                         self.record_have(&path, version(t))?;
@@ -249,4 +271,14 @@ impl Workspace {
         self.save()?;
         Ok(report)
     }
+}
+
+/// Returns `true` if something other than a directory is where a directory
+/// above `abs`, below `root`, has to go.
+fn blocked(root: &Path, abs: &Path) -> bool {
+    abs.ancestors()
+        .skip(1)
+        .take_while(|dir| *dir != root && dir.starts_with(root))
+        .find_map(|dir| std::fs::symlink_metadata(dir).ok())
+        .is_some_and(|meta| !meta.is_dir())
 }

@@ -232,12 +232,14 @@ pub async fn fetch(
     Ok(files)
 }
 
-/// Returns `true` if `path` is a relative path that stays below its base.
+/// Returns `true` if `path` is a relative path that stays below its base,
+/// outside any directory reserved for Kelp's own files.
 pub(crate) fn is_safe(path: &str) -> bool {
     !path.is_empty()
         && !path.contains('\\')
         && !path.contains(':')
         && path.split('/').all(|s| !matches!(s, "" | "." | ".."))
+        && !kelp_workspace::ignore::is_meta_path(path)
 }
 
 fn join_error(e: tokio::task::JoinError) -> Error {

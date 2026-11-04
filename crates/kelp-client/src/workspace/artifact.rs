@@ -151,7 +151,7 @@ impl Workspace {
     }
 
     /// Returns `true` if the workspace path `local` is in an artifact directory.
-    pub(super) fn in_artifact_dir(&self, local: &str) -> bool {
+    pub(crate) fn in_artifact_dir(&self, local: &str) -> bool {
         let local = local.to_lowercase();
         self.config.artifacts.iter().any(|m| {
             let to = m.to.to_lowercase();

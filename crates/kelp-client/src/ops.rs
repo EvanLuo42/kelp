@@ -292,7 +292,12 @@ impl Session {
         let mut lock = workspace_lock(&root)?;
         let mut waited = Duration::ZERO;
         let mut waiting = None;
-        while lock.try_write().is_err() {
+        // The guard that ends the wait is the one held: letting go of it to
+        // take it again would let another process slip in between.
+        let _guard = loop {
+            if let Ok(guard) = lock.try_write() {
+                break guard;
+            }
             if waited >= LOCK_WAIT {
                 return Err(Error::Busy);
             }
@@ -301,11 +306,10 @@ impl Session {
             }
             tokio::time::sleep(LOCK_POLL).await;
             waited += LOCK_POLL;
-        }
+        };
         if let Some(mut meter) = waiting {
             meter.add(1, 0);
         }
-        let _guard = lock.try_write().map_err(|_| Error::Busy)?;
         let mut ws = Workspace::open(&root)?;
         if let Some(projector) = self.projectors.lock().expect("projector lock").get(&root) {
             ws.set_projector(projector.clone());
