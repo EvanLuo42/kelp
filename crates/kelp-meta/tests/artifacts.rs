@@ -22,7 +22,7 @@ fn contents(f: &MetaFixture, cl: u64, platform: &str, bytes: &[u8]) -> ArtifactC
 fn submits(f: &MetaFixture, n: u64) {
     for i in 1..=n {
         let path = format!("//game/main/f{i}.txt");
-        f.submit("//game/main", vec![f.add(&path, i.to_string().as_bytes())])
+        f.submit("//game/main", vec![f.add(&path, format!("source {i}").as_bytes())])
             .unwrap();
     }
 }

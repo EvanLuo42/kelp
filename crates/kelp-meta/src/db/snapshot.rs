@@ -52,7 +52,8 @@ macro_rules! for_each_table {
             LABELS,
             MOVES,
             PROFILES,
-            EMAIL_OWNERS);
+            EMAIL_OWNERS,
+            STREAM_OWNERS);
         done
     }};
     (@each $f:ident, $src:expr, $dst:expr, $done:ident, $($table:ident),*) => {
