@@ -32,6 +32,7 @@ Credentials come from the `AWS_*` environment variables.
 | `client_secret` | string | none | for providers that require one |
 | `scopes` | string | `"openid profile email"` | requested scopes |
 | `username_claim` | string | `"preferred_username"` | the claim that names a new user |
+| `expect_claim` | string | `username_claim` | the claim a first login is matched against [expected names](../admin/sso.md#how-accounts-are-linked); `"sub"` for the subject, `"email"` for a verified address |
 | `groups_claim` | string | none | a claim listing group names |
 | `auto_create` | bool | `true` | whether a first login creates the user |
 | `require` | bool | `false` | whether users other than administrators must use single sign-on |

@@ -48,12 +48,17 @@ pub(super) fn publish(
         return Err(Error::Invalid("an artifact needs at least one file".into()));
     }
     super::apply::validate_name("artifact", &contents.name)?;
-    if txn
-        .open_table(STREAMS)?
-        .get(contents.stream.key())?
-        .is_none()
-    {
-        return Err(Error::NotFound(format!("stream {}", contents.stream)));
+    let stream: crate::record::Stream = match txn.open_table(STREAMS)?.get(contents.stream.key())? {
+        Some(v) => dec("streams", v.value())?,
+        None => return Err(Error::NotFound(format!("stream {}", contents.stream))),
+    };
+    // Replicas apply what the commit server accepted, which older versions
+    // did without this check.
+    if origin == Origin::Local && contents.cl > stream.head {
+        return Err(Error::NotFound(format!(
+            "changelist {} of {}",
+            contents.cl, contents.stream
+        )));
     }
     let mut folded = std::collections::HashSet::new();
     for (path, _) in &contents.files {

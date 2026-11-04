@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use kelp_cas::{BlobStore, Chunker, FastCdcChunker, FsBlobStore, build_manifest};
-use kelp_core::{ChunkId, ChunkRef, ContentId, FileManifest};
+use kelp_core::{ChunkId, ChunkRef, ContentId, FileManifest, Hash};
 use kelp_proto::{Reply, Request};
 
 use crate::progress::{Meter, Phase, Progress, Quiet};
@@ -66,6 +66,10 @@ impl ContentCache {
 
     /// Returns the cached manifest of `content`, if any.
     ///
+    /// A cached manifest that is corrupt, names other content or whose chunk
+    /// lengths do not add up is removed and reported as not cached, so that
+    /// it is fetched again.
+    ///
     /// # Errors
     ///
     /// Returns an error if the manifest exists but cannot be read.
@@ -83,13 +87,33 @@ impl ContentCache {
                 chunks,
             }));
         }
-        match fs::read(self.manifest_path(content)) {
-            Ok(bytes) => postcard::from_bytes(&bytes)
-                .map(Some)
-                .map_err(|e| Error::Invalid(format!("corrupt cached manifest {content}: {e}"))),
+        let path = self.manifest_path(content);
+        match fs::read(&path) {
+            Ok(bytes) => match postcard::from_bytes::<FileManifest>(&bytes) {
+                Ok(m) if m.content == *content && m.is_consistent() => Ok(Some(m)),
+                _ => {
+                    self.forget_manifest(content);
+                    Ok(None)
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Removes the cached manifest of `content`, which proved wrong, so that
+    /// the next fetch downloads it again.
+    fn forget_manifest(&self, content: &ContentId) {
+        let _ = fs::remove_file(self.manifest_path(content));
+    }
+
+    /// Returns the error for assembled bytes that do not hash to `content`,
+    /// after forgetting the manifest that led to them.
+    fn mismatch(&self, content: &ContentId) -> Error {
+        self.forget_manifest(content);
+        Error::Invalid(format!(
+            "cached content {content} does not match its manifest; fetch it again"
+        ))
     }
 
     /// Stores a manifest.
@@ -329,7 +353,8 @@ impl ContentCache {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::NotCached`] if the content is not fully cached.
+    /// Returns [`Error::NotCached`] if the content is not fully cached, or
+    /// [`Error::Invalid`] if its chunks do not make up the content.
     pub async fn read(&self, content: &ContentId) -> Result<Vec<u8>> {
         let manifest = self.manifest(content)?.ok_or(Error::NotCached(*content))?;
         let mut out = Vec::with_capacity(manifest.size as usize);
@@ -340,6 +365,9 @@ impl ContentCache {
                 .await
                 .map_err(|_| Error::NotCached(*content))?;
             out.extend_from_slice(&data);
+        }
+        if ContentId::of(&out) != *content {
+            return Err(self.mismatch(content));
         }
         Ok(out)
     }
@@ -404,7 +432,8 @@ impl ContentCache {
         Ok(())
     }
 
-    /// Writes the chunks of `manifest` to a new file at `tmp`, in order.
+    /// Writes the chunks of `manifest` to a new file at `tmp`, in order, and
+    /// checks that they make up its content.
     async fn assemble_serial(
         &self,
         manifest: &FileManifest,
@@ -412,6 +441,7 @@ impl ContentCache {
         mut meter: Option<&mut Meter>,
     ) -> Result<()> {
         let mut file = fs::File::create(tmp)?;
+        let mut hasher = blake3::Hasher::new();
         for chunk in &manifest.chunks {
             let data = self
                 .chunks
@@ -421,10 +451,14 @@ impl ContentCache {
             if data.len() != chunk.len as usize {
                 return Err(Error::NotCached(manifest.content));
             }
+            hasher.update(&data);
             std::io::Write::write_all(&mut file, &data)?;
             if let Some(m) = meter.as_deref_mut() {
                 m.add(0, u64::from(chunk.len));
             }
+        }
+        if ContentId(Hash(*hasher.finalize().as_bytes())) != manifest.content {
+            return Err(self.mismatch(&manifest.content));
         }
         Ok(())
     }
@@ -470,7 +504,19 @@ impl ContentCache {
         while let Some(done) = tasks.join_next().await {
             settle(done, meter.as_deref_mut(), &mut failure);
         }
-        failure.map_or(Ok(()), Err)
+        if let Some(e) = failure {
+            return Err(e);
+        }
+        // The chunks were written out of order; hash the file they made.
+        drop(file);
+        let path = tmp.to_owned();
+        let actual = tokio::task::spawn_blocking(move || crate::fsutil::content_of(&path))
+            .await
+            .map_err(join_error)??;
+        if actual != content {
+            return Err(self.mismatch(&content));
+        }
+        Ok(())
     }
 
     fn manifest_path(&self, content: &ContentId) -> PathBuf {

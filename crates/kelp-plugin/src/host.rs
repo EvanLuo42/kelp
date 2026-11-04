@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use wasmtime::component::{Component, Linker};
-use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder};
 
 use crate::{Error, PluginWorld, Result};
 
@@ -23,10 +25,15 @@ pub use wit::{Change, FileVersion, MergeResult, Span, Verdict};
 /// Bounds on one plugin call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Units of fuel, roughly instructions, a call may use.
+    /// Units of fuel, roughly instructions, a call may use. Reading a file
+    /// costs [`READ_FUEL_PER_BYTE`] per byte as well.
     pub fuel: u64,
-    /// Bytes of linear memory an instance may grow to.
+    /// Bytes of linear memory a call may grow to. A plugin has at most
+    /// [`MAX_MEMORIES`] memories, each bounded by this.
     pub memory: usize,
+    /// Bytes of the largest file a trigger may read; larger files read as
+    /// none.
+    pub read_file: u64,
 }
 
 impl Default for Limits {
@@ -34,9 +41,22 @@ impl Default for Limits {
         Self {
             fuel: 20_000_000_000,
             memory: 512 << 20,
+            read_file: 64 << 20,
         }
     }
 }
+
+/// How many linear memories a plugin may have. A component built from one
+/// module has one.
+pub const MAX_MEMORIES: usize = 1;
+/// How many tables, and table elements in all of them, a plugin may have.
+const MAX_TABLES: usize = 16;
+const MAX_TABLE_ELEMENTS: usize = 100_000;
+/// How many core instances a plugin may create.
+const MAX_INSTANCES: usize = 16;
+/// The fuel a trigger pays for each byte of a file it reads, so that reading
+/// files in a loop runs out of fuel like any other loop.
+pub const READ_FUEL_PER_BYTE: u64 = 8;
 
 /// Compiles and runs plugins.
 #[derive(Clone)]
@@ -58,13 +78,29 @@ type ReadFile = Box<dyn FnMut(&str) -> Option<Vec<u8>> + Send>;
 struct State {
     limits: StoreLimits,
     read_file: Option<ReadFile>,
+    /// The largest file the trigger may read.
+    read_limit: u64,
+    /// The declared size of each file of the change, to refuse large files
+    /// before reading them.
+    sizes: HashMap<String, u64>,
+}
+
+impl State {
+    /// Reads a file for the trigger, if it is small enough.
+    fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+        if self.sizes.get(path).is_some_and(|&s| s > self.read_limit) {
+            return None;
+        }
+        let data = self.read_file.as_mut()?(path)?;
+        (data.len() as u64 <= self.read_limit).then_some(data)
+    }
 }
 
 impl trigger::kelp::plugin::types::Host for State {}
 
 impl trigger::TriggerImports for State {
     fn read_file(&mut self, path: String) -> Option<Vec<u8>> {
-        self.read_file.as_mut().and_then(|f| f(&path))
+        self.read(&path)
     }
 }
 
@@ -117,9 +153,14 @@ impl Host {
         let state = State {
             limits: StoreLimitsBuilder::new()
                 .memory_size(self.limits.memory)
-                .instances(16)
+                .memories(MAX_MEMORIES)
+                .tables(MAX_TABLES)
+                .table_elements(MAX_TABLE_ELEMENTS)
+                .instances(MAX_INSTANCES)
                 .build(),
             read_file,
+            read_limit: self.limits.read_file,
+            sizes: HashMap::new(),
         };
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
@@ -246,12 +287,36 @@ impl Plugin {
     ) -> Result<Verdict> {
         self.require(PluginWorld::Trigger)?;
         let mut store = host.store(Some(Box::new(read_file)))?;
+        store.data_mut().sizes = changes.iter().map(|c| (c.path.clone(), c.size)).collect();
         let mut linker = Linker::new(&host.engine);
         trigger::Trigger::add_to_linker::<State, wasmtime::component::HasSelf<State>>(
             &mut linker,
             |s| s,
         )
         .map_err(invalid)?;
+        // The generated import cannot reach the store's fuel; this one
+        // charges for the bytes it hands over.
+        linker.allow_shadowing(true);
+        linker
+            .root()
+            .func_wrap(
+                "read-file",
+                |mut store: StoreContextMut<'_, State>, (path,): (String,)| {
+                    let data = store.data_mut().read(&path);
+                    let cost = data
+                        .as_ref()
+                        .map_or(0, |d| d.len() as u64)
+                        .saturating_mul(READ_FUEL_PER_BYTE);
+                    let left = store.get_fuel()?;
+                    if cost > left {
+                        store.set_fuel(0)?;
+                        return Err(wasmtime::Trap::OutOfFuel.into());
+                    }
+                    store.set_fuel(left - cost)?;
+                    Ok((data,))
+                },
+            )
+            .map_err(invalid)?;
         let bindings =
             trigger::Trigger::instantiate(&mut store, &self.component, &linker).map_err(trap)?;
         let changes: Vec<trigger::kelp::plugin::types::Change> = changes

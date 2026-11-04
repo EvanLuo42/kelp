@@ -82,6 +82,40 @@ async fn deleting_most_of_a_pack_lets_compaction_reclaim_it() {
     assert_eq!(reopened.compact().await.unwrap().packs, 0);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reads_during_compaction_find_moved_chunks() {
+    let sandbox = Sandbox::new();
+    let chunks: Vec<_> = (0..200).map(|i| chunk(i, 2_000)).collect();
+    {
+        let store = PackStore::open(sandbox.dir("store")).unwrap();
+        for (id, data) in &chunks {
+            store.put(*id, data.clone()).await.unwrap();
+        }
+        store.sync().await.unwrap();
+    }
+    let store = PackStore::open(sandbox.path("store")).unwrap();
+    for (id, _) in &chunks[..150] {
+        store.delete(*id).await.unwrap();
+    }
+    let live = chunks[150..].to_vec();
+    let readers: Vec<_> = (0..4)
+        .map(|_| {
+            let (store, live) = (store.clone(), live.clone());
+            tokio::spawn(async move {
+                for _ in 0..20 {
+                    for (id, data) in &live {
+                        assert_eq!(&store.get(*id).await.unwrap(), data);
+                    }
+                }
+            })
+        })
+        .collect();
+    assert_eq!(store.compact().await.unwrap().packs, 1);
+    for reader in readers {
+        reader.await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn compaction_keeps_chunks_written_after_a_torn_record() {
     let sandbox = Sandbox::new();

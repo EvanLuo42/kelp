@@ -11,7 +11,10 @@ mod host;
 
 use std::fmt;
 
-pub use host::{Change, FileVersion, Host, Limits, MergeResult, Plugin, Span, Verdict};
+pub use host::{
+    Change, FileVersion, Host, Limits, MAX_MEMORIES, MergeResult, Plugin, READ_FUEL_PER_BYTE, Span,
+    Verdict,
+};
 
 /// The error type for plugin operations.
 #[derive(Debug, thiserror::Error)]

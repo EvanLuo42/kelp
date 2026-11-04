@@ -17,17 +17,40 @@ The release workflow publishes the section of the tagged version as the GitHub R
 - `kelp shelves` lists shelves, newest first, optionally of one stream or user.
 - `kelp diff` shows files whose type names a `differ` plugin as the plugin describes them.
 - `kelp diff --tool` and `kelp snapshot diff --tool`, or `KELP_DIFF_TOOL`, open each file in an external diff tool.
+- `[oidc] expect_claim` chooses which claim links a first single sign-on login to an account an administrator expected (`sub`, verified `email`, or the user name as before).
 
 ### Changed
 
-- The metadata format is now version 10, which adds user profiles and an index of where content appears; existing databases migrate on open.
+- The metadata format is now version 10; existing databases migrate on open.
+  It adds user profiles and an index of where content appears, folds names one letter at a time as NTFS and APFS do (so a final `ς` and `σ` are one name), drops views left by deleted streams and records stream owners.
+- The wire protocol is now version 2, because user profiles changed several messages.
+  Kelp 0.1.0 clients, `kelpd`, edges and commit group members are refused with an error that says which side to upgrade; see [Upgrading](docs/src/admin/upgrading.md).
+- Workspace state is now version 3; existing workspaces upgrade on open.
 - Messages larger than 16 MiB, such as the submit of hundreds of thousands of files, are split across frames, up to 1 GiB, instead of failing.
 - A merge that leaves out a change of its source, for example because the workspace's view does not cover it, is refused.
+- Only its owner or an administrator of it may delete a task stream, and others may create a task stream only from a parent whose every file they can read.
+- Turning on two-factor login again requires turning it off first, with a current code.
+- Failed logins no longer reveal whether an account exists.
 
 ### Fixed
 
-- Fetching content by its hash now requires read permission on a path it appears at; clients from before this release keep working for users who may read every path.
+- Fetching content by its hash now requires read permission on a path it appears at.
+- Tree diffs no longer accept trees from outside the named stream, which let a user read files hidden from them.
+- Sessions end when their token is revoked or expires, and follow a merged user.
+- Edges bound uploads they forward and store only manifests verified by the commit server.
+- Garbage collection no longer frees content that a concurrent submit, shelve or obliterate refers to.
+- A merge into a parent from a child no longer marks the child as having merged the parent.
+- `filelog` follows a move into a path that existed before.
+- Obliterate also removes paths changed through writable imports.
 - `status` no longer misses a change that keeps a file's size within the same tick of a coarse file system clock, such as FAT's, or of a file server whose clock differs from the client's.
+- Workspaces no longer report tracked files that became ignored as deleted, snapshot files opened for delete before overwriting them, and restore the moves of a snapshot.
+- Sync checks each file against its content id, skips paths inside `.kelp` directories, and skips a file whose directory is blocked by a file instead of failing.
+- The credentials file is created private, and the CLI refuses a `kelpd` pipe served by another Windows user.
+- `kelpd` of another version can be stopped, two `kelpd` no longer start for one home on Unix, and accept errors no longer stop it.
+- Projected workspaces keep files open for writing through a sync, keep inodes across renames, and hydrate ProjFS placeholders with their own version.
+- Caches replace corrupt chunks, and a failed pack fsync keeps failing until the lost chunks are stored again.
+- Plugins are limited to one memory and bounded tables, and file reads are capped and cost fuel.
+- `--password-stdin` refuses end of input and empty passwords.
 
 ## [0.1.0] - 2026-10-31
 

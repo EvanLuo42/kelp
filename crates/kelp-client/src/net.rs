@@ -7,7 +7,8 @@ use kelp_core::{ChunkId, ContentId, Hash, TreeId};
 use kelp_proto::io::{expect_frame, split_chunk, write_chunk, write_message};
 use kelp_proto::rpc::{FileDelta, FileInfo, StreamInfo};
 use kelp_proto::{
-    Auth, Capabilities, ErrorReply, Hello, MsgType, PROTOCOL_VERSION, Reply, Request, Welcome,
+    Auth, Capabilities, ErrorReply, Hello, MIN_PROTOCOL_VERSION, MsgType, PROTOCOL_VERSION, Reply,
+    Request, Welcome,
 };
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;
@@ -92,7 +93,7 @@ impl Connection {
 
         let (mut send, mut recv) = conn.open_bi().await.map_err(|e| connect_err(&e))?;
         let hello = Hello {
-            min_version: 1,
+            min_version: MIN_PROTOCOL_VERSION,
             max_version: PROTOCOL_VERSION,
             capabilities: Capabilities::default(),
             client_name: concat!("kelp-client/", env!("CARGO_PKG_VERSION")).to_owned(),

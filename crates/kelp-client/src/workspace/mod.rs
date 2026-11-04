@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use kelp_core::time::{Clock, SystemClock};
 
@@ -19,6 +20,7 @@ use kelp_core::typemap::{FileKind, FileType, LockPolicy, Typemap};
 use kelp_core::{ContentId, DepotPath, LocalClId};
 use kelp_proto::rpc::FileInfo;
 use kelp_proto::{Reply, Request};
+use kelp_workspace::ignore::is_meta_path;
 use kelp_workspace::{
     Config, FileVersion, HaveEntry, Ignore, META_DIR, OpenAction, PendingChanges, State, View,
 };
@@ -33,7 +35,7 @@ pub use resolve::{ResolveMode, ResolveOutcome};
 pub use snapshot::{Described, FileDiff, SnapshotSide, render_diff};
 pub use sync::{SkipReason, SyncReport};
 
-use crate::fsutil::{content_of, entry_matches, file_matches};
+use crate::fsutil::{content_of, entry_matches, file_matches, mtime_trusted};
 use crate::index::DiskEntry;
 use crate::{Connection, Error, Result};
 
@@ -49,6 +51,10 @@ pub struct Workspace {
     state: State,
     clock: Arc<dyn Clock>,
     projector: Option<Arc<dyn Projector>>,
+    /// When the state was last saved, by the clock of the file system; see
+    /// [`State::saved_at`]. Every modification time in the saved state was
+    /// recorded before then.
+    saved_at: AtomicU64,
 }
 
 /// An import of the workspace's stream, with the typemap of its source
@@ -132,6 +138,7 @@ impl Workspace {
         let root = fs::canonicalize(root)?;
         let config = Config::load(&root)?;
         let state = State::load(&root)?;
+        let saved_at = AtomicU64::new(State::saved_at(&root).unwrap_or(0));
         Ok(Self {
             stream: config.stream_path()?,
             view: config.view()?,
@@ -142,6 +149,7 @@ impl Workspace {
             root,
             clock: Arc::new(SystemClock),
             projector: None,
+            saved_at,
         })
     }
 
@@ -216,7 +224,19 @@ impl Workspace {
     ///
     /// Returns an error if the state cannot be written.
     pub fn save(&self) -> Result<()> {
-        Ok(self.state.save(&self.root)?)
+        self.state.save(&self.root)?;
+        let saved_at = State::saved_at(&self.root).unwrap_or(0);
+        self.saved_at.store(saved_at, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Returns a time, by the clock of the file system, that every
+    /// modification time the workspace trusts was recorded before.
+    ///
+    /// A recorded time is only trusted if it is older than this; see
+    /// [`mtime_trusted`](crate::fsutil::mtime_trusted).
+    fn recorded(&self) -> u64 {
+        self.saved_at.load(Ordering::Relaxed)
     }
 
     /// Returns the type of `path` under the depot's typemap as last fetched,
@@ -372,6 +392,7 @@ impl Workspace {
         };
         let mut seen = BTreeSet::new();
         let mut unchanged = Vec::new();
+        let recorded = self.recorded();
         for (local, entry) in files {
             let Some(path) = self.view.to_depot(&local) else {
                 continue;
@@ -381,21 +402,41 @@ impl Workspace {
                 continue;
             }
             match self.state.have.get(&path) {
-                Some(h) if !entry_matches(&self.abs(&local), h, entry)? => {
+                Some(h) if !entry_matches(&self.abs(&local), h, entry, recorded)? => {
                     status.modified.push(path)
                 }
-                Some(h) if h.mtime != entry.mtime && !racy(entry.mtime) => {
+                // Hashed and unchanged. Saving the time, even if it is the
+                // one recorded, lets the next status trust it.
+                Some(h) if !mtime_trusted(h, entry, recorded) && !racy(entry.mtime) => {
                     unchanged.push((path, entry.mtime))
                 }
                 Some(_) => {}
                 None => status.added.push(path),
             }
         }
-        for path in self.state.have.keys() {
-            if !seen.contains(path) && self.state.pending.action(path).is_none() {
-                status.deleted.push(path.clone());
+        for (path, h) in &self.state.have {
+            if seen.contains(path) || self.state.pending.action(path).is_some() {
+                continue;
+            }
+            // Listings leave out ignored files and artifact directories, but
+            // a tracked file there, say one a newly synced .kelpignore
+            // covers, is still tracked and not deleted.
+            let abs = self.abs(&h.local);
+            let entry = match fs::symlink_metadata(&abs) {
+                Ok(meta) if meta.is_file() => DiskEntry::of(&meta),
+                // Missing, or something else is in its place.
+                _ => {
+                    status.deleted.push(path.clone());
+                    continue;
+                }
+            };
+            if !entry_matches(&abs, h, entry, recorded)? {
+                status.modified.push(path.clone());
+            } else if !mtime_trusted(h, entry, recorded) && !racy(entry.mtime) {
+                unchanged.push((path.clone(), entry.mtime));
             }
         }
+        status.modified.sort();
         Ok((status, unchanged))
     }
 
@@ -440,10 +481,22 @@ impl Workspace {
         ty.lock == LockPolicy::None && ty.kind != FileKind::Binary
     }
 
+    /// Returns the workspace path `path` maps to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OutsideView`] if the view does not map `path`, and
+    /// [`Error::Invalid`] if it maps it into a directory named like
+    /// [`META_DIR`], where Kelp keeps its own files.
     fn view_map(&self, path: &DepotPath) -> Result<String> {
-        self.view
+        let local = self
+            .view
             .map(path)
-            .ok_or_else(|| Error::OutsideView(path.to_string()))
+            .ok_or_else(|| Error::OutsideView(path.to_string()))?;
+        if is_meta_path(&local) {
+            return Err(reserved(path));
+        }
+        Ok(local)
     }
 
     fn stream_relative(&self, path: &DepotPath) -> String {
@@ -532,6 +585,9 @@ impl Workspace {
     /// changed since, or its modification time is too coarse to tell a later
     /// change apart, the time is not recorded, so the next status hashes the
     /// file instead of trusting it.
+    ///
+    /// A recorded time is only trusted once the state has been saved after
+    /// it; see [`recorded`](Self::recorded).
     fn record_have_observed(
         &mut self,
         path: &DepotPath,
@@ -574,7 +630,7 @@ impl Workspace {
         };
         if meta.is_file() {
             if let Some(have) = self.state.have.get(path)
-                && file_matches(&abs, have)?
+                && file_matches(&abs, have, self.recorded())?
             {
                 return Ok(());
             }
@@ -592,6 +648,13 @@ impl Workspace {
             executable: h.executable,
         })
     }
+}
+
+/// The error for a file that maps into a directory reserved for Kelp.
+pub(crate) fn reserved(path: &DepotPath) -> Error {
+    Error::Invalid(format!(
+        "{path} maps into a {META_DIR} directory, which Kelp reserves for its own files"
+    ))
 }
 
 fn index_entries(index: &crate::DiskIndex) -> Vec<(String, DiskEntry)> {
@@ -648,12 +711,18 @@ fn resolve_existing_prefix(path: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Returns `true` if a modification time of `mtime` nanoseconds may be too
-/// coarse to tell a write from a later one: whole seconds, as file systems
-/// such as FAT and HFS+ record, within two seconds of now.
+/// Returns `true` if a modification time of `mtime` nanoseconds is not worth
+/// recording now: it is unknown (0), not in the past, or whole seconds, as
+/// file systems such as FAT and HFS+ record, within two seconds of now, so
+/// a later write could still leave it unchanged.
+///
+/// Times that pass are still only trusted once the state is saved after
+/// them; see [`mtime_trusted`].
 fn racy(mtime: u64) -> bool {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
-    mtime.is_multiple_of(1_000_000_000) && now.saturating_sub(mtime) < 2_000_000_000
+    mtime == 0
+        || mtime >= now
+        || (mtime.is_multiple_of(1_000_000_000) && now - mtime < 2_000_000_000)
 }

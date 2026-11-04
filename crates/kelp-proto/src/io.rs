@@ -6,6 +6,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{Error, Flags, FrameHeader, HEADER_LEN, MAX_MESSAGE, MAX_PAYLOAD, MsgType, Result};
 
+/// How much of a payload is allocated before any of it has arrived.
+const INITIAL_PAYLOAD: usize = 64 << 10;
+
 /// A frame read from a stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
@@ -152,14 +155,15 @@ pub async fn read_frame_within<R: AsyncRead + Unpin>(
                 u32::try_from(total).unwrap_or(u32::MAX),
             ));
         }
-        let start = payload.len();
-        payload.resize(start + header.payload_len as usize, 0);
-        r.read_exact(&mut payload[start..])
-            .await
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::UnexpectedEof => Error::UnexpectedEof,
-                _ => Error::Io(e),
-            })?;
+        // The buffer grows as bytes arrive, so a header that merely claims a
+        // large payload does not commit memory for it.
+        let len = header.payload_len as usize;
+        let expected = payload.len() + len;
+        payload.reserve(len.min(INITIAL_PAYLOAD));
+        (&mut *r).take(len as u64).read_to_end(&mut payload).await?;
+        if payload.len() != expected {
+            return Err(Error::UnexpectedEof);
+        }
         if !header.flags.contains(Flags::CONTINUED) {
             break;
         }

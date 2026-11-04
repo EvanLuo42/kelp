@@ -13,6 +13,7 @@ mod nodes;
 mod obliterate;
 mod proposal;
 mod reader;
+mod refold;
 mod replica;
 mod snapshot;
 mod streams;
@@ -83,6 +84,7 @@ const LABELS: TableDefinition<&str, Bytes> = TableDefinition::new("labels");
 const PROFILES: TableDefinition<&str, Bytes> = TableDefinition::new("profiles");
 const EMAIL_OWNERS: TableDefinition<&str, &str> = TableDefinition::new("email_owners");
 const MOVES: TableDefinition<(&str, u64), Bytes> = TableDefinition::new("moves");
+const STREAM_OWNERS: TableDefinition<&str, &str> = TableDefinition::new("stream_owners");
 const CONTENT_REFS: TableDefinition<(&[u8], &str), ()> = TableDefinition::new("content_refs");
 
 const LAST_INDEX: &str = "last_index";
@@ -119,10 +121,21 @@ const MIGRATIONS: &[Migration] = &[
     |_| Ok(()),
     // 9 adds user profiles and the owners of their addresses, likewise.
     |_| Ok(()),
-    // 10 indexes where content appears, so reads of it can be checked.
-    content_refs::backfill,
+    // 10 folds names one character at a time, so keys with a final sigma
+    // and similar letters change; drops the views deleted streams left
+    // behind; records who created each stream, from the log; and indexes
+    // where content appears, under the new keys, so reads of it can be
+    // checked.
+    |txn| {
+        refold::refold(txn)?;
+        streams::replay_stream_lives(txn)?;
+        content_refs::backfill(txn)
+    },
 ];
 const NEXT_CL: &str = "next_cl";
+/// The next changelist number as of the last obliterate, which rewrites the
+/// trees of earlier changelists.
+const OBLITERATED: &str = "obliterated_at";
 const PROTECTIONS: &str = "protections";
 const REVIEW_RULES: &str = "review_rules";
 
@@ -229,6 +242,7 @@ impl MetaDb {
         txn.open_table(MOVES)?;
         txn.open_table(PROFILES)?;
         txn.open_table(EMAIL_OWNERS)?;
+        txn.open_table(STREAM_OWNERS)?;
         txn.open_table(CONTENT_REFS)?;
         txn.commit()?;
         Ok(Self { db })

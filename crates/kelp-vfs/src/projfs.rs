@@ -344,10 +344,47 @@ fn basic_info(file: Option<&LowerFile>) -> PRJ_FILE_BASIC_INFO {
 }
 
 fn placeholder_info(file: Option<&LowerFile>) -> PRJ_PLACEHOLDER_INFO {
-    PRJ_PLACEHOLDER_INFO {
+    let mut info = PRJ_PLACEHOLDER_INFO {
         FileBasicInfo: basic_info(file),
         ..Default::default()
+    };
+    if let Some(f) = file {
+        info.VersionInfo.ContentID = content_id(f);
     }
+    info
+}
+
+/// Marks the layout of a [`content_id`]; placeholders written before Kelp
+/// recorded one have all zeros.
+const CONTENT_ID_V1: u8 = 1;
+
+/// Describes `file` in a placeholder's content id, so that hydrating the
+/// placeholder fetches the version it shows even if sync has changed the
+/// lower tree since.
+fn content_id(file: &LowerFile) -> [u8; 128] {
+    let mut id = [0u8; 128];
+    id[0] = CONTENT_ID_V1;
+    id[1..33].copy_from_slice(&file.content);
+    id[33..41].copy_from_slice(&file.size.to_le_bytes());
+    id[41] = file.executable.into();
+    id[42] = file.read_only.into();
+    id[43..51].copy_from_slice(&file.mtime.to_le_bytes());
+    id
+}
+
+/// Reads back a [`content_id`], or `None` for one Kelp did not write.
+fn from_content_id(id: &[u8; 128]) -> Option<LowerFile> {
+    if id[0] != CONTENT_ID_V1 {
+        return None;
+    }
+    let u64_at = |i: usize| u64::from_le_bytes(id[i..i + 8].try_into().expect("8 bytes"));
+    Some(LowerFile {
+        content: id[1..33].try_into().expect("32 bytes"),
+        size: u64_at(33),
+        executable: id[41] != 0,
+        read_only: id[42] != 0,
+        mtime: u64_at(43),
+    })
 }
 
 unsafe extern "system" fn start_enumeration(
@@ -486,15 +523,29 @@ unsafe extern "system" fn get_file_data(
     offset: u64,
     length: u32,
 ) -> HRESULT {
-    // SAFETY: ProjFS passes valid callback data.
-    let (inner, path) = unsafe { (inner(data), path_of(data)) };
+    // SAFETY: ProjFS passes valid callback data, whose version info, when
+    // present, is the placeholder's and valid during the callback.
+    let (inner, path, recorded) = unsafe {
+        let version = (*data).VersionInfo;
+        let recorded = match version.is_null() {
+            true => None,
+            false => from_content_id(&(*version).ContentID),
+        };
+        (inner(data), path_of(data), recorded)
+    };
     let lower = inner.lower.read().expect("lower lock");
-    let Some((actual, file)) =
-        resolve(&lower, &path).and_then(|a| lower.file(&a).copied().map(|f| (a, f)))
-    else {
-        return ERROR_FILE_NOT_FOUND.to_hresult();
+    let actual = resolve(&lower, &path);
+    // The placeholder records the version it shows; sync may have updated
+    // the lower tree before the placeholder. Placeholders from before Kelp
+    // recorded versions are hydrated with the lower tree's.
+    let found = match recorded {
+        Some(file) => Some((actual.unwrap_or(path), file)),
+        None => actual.and_then(|a| lower.file(&a).copied().map(|f| (a, f))),
     };
     drop(lower);
+    let Some((actual, file)) = found else {
+        return ERROR_FILE_NOT_FOUND.to_hresult();
+    };
     let mut content = Vec::with_capacity(file.size as usize);
     if inner
         .hydrator
@@ -532,4 +583,25 @@ unsafe extern "system" fn get_file_data(
         position += chunk as u64;
     }
     S_OK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn placeholders_record_the_version_they_show() {
+        let file = LowerFile {
+            content: [7; 32],
+            size: 1 << 40,
+            executable: true,
+            read_only: false,
+            mtime: 1_700_000_000_123_456_789,
+        };
+        let info = placeholder_info(Some(&file));
+        assert_eq!(from_content_id(&info.VersionInfo.ContentID), Some(file));
+        assert_eq!(from_content_id(&[0; 128]), None, "written before versions");
+        let dir = placeholder_info(None);
+        assert_eq!(from_content_id(&dir.VersionInfo.ContentID), None);
+    }
 }

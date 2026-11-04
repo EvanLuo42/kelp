@@ -152,3 +152,44 @@ fn the_audit_log_chains_every_command() {
     let (count, head) = r.verify_audit().unwrap();
     assert_eq!((count, head), (4, entries[3].hash));
 }
+
+#[test]
+fn an_obliterate_between_marking_and_sweeping_keeps_the_trees_it_wrote() {
+    let f = MetaFixture::new();
+    f.submit(
+        "//game/main",
+        vec![
+            f.add("//game/main/Docs/a.txt", b"a"),
+            f.add("//game/main/Docs/b.txt", b"b"),
+        ],
+    )
+    .unwrap();
+    f.submit("//game/main", vec![f.add("//game/main/c.txt", b"c")])
+        .unwrap();
+    let (live, through) = f.db().read().unwrap().live_nodes().unwrap();
+
+    // The obliterate gives changelists 1 and 2 trees the marking never saw.
+    f.db()
+        .commit(Command::Obliterate {
+            paths: vec!["//game/main/Docs/a.txt".into()],
+        })
+        .unwrap();
+    f.db().sweep_nodes(&live, through).unwrap();
+
+    let r = f.db().read().unwrap();
+    r.live_nodes().expect("every tree is whole");
+    let nodes = r.nodes().unwrap();
+    let dirs = Dirs::new(&nodes);
+    let first = r.changelist(ClNumber(1)).unwrap().unwrap();
+    assert!(dirs.lookup(first.root, "Docs/b.txt").unwrap().is_some());
+    assert!(dirs.lookup(first.root, "Docs/a.txt").unwrap().is_none());
+    drop((nodes, r));
+
+    // Once a changelist follows the obliterate, sweeping trusts its marking
+    // again and still keeps everything in use.
+    f.submit("//game/main", vec![f.add("//game/main/d.txt", b"d")])
+        .unwrap();
+    let (live, through) = f.db().read().unwrap().live_nodes().unwrap();
+    f.db().sweep_nodes(&live, through).unwrap();
+    f.db().read().unwrap().live_nodes().unwrap();
+}

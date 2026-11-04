@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::apply::{self, Origin};
 use super::artifacts::NEXT_ARTIFACT;
 use super::{
-    Applied, CONSENSUS, MANIFESTS, META, MetaDb, Reader, append_log, enc, next_cl, submit,
+    Applied, CONSENSUS, MANIFESTS, META, MetaDb, Reader, SHELVES, append_log, enc, next_cl, submit,
 };
 use crate::{ArtifactContents, Command, LogIndex, Result, ShelfContents, Submission, Timestamp};
 
@@ -199,7 +199,7 @@ fn write_consensus(txn: &WriteTransaction, consensus: &BTreeMap<String, Vec<u8>>
 
 fn apply_in(txn: &WriteTransaction, proposal: &Proposal) -> Result<Outcome> {
     let logged = |cmd: &Command, actor: &str| -> Result<Outcome> {
-        let applied = apply::apply(txn, cmd, Origin::Local)?;
+        let applied = apply::apply(txn, cmd, Origin::Local, actor)?;
         let index = append_log(txn, cmd, actor, Origin::Local)?;
         Ok(Outcome::Logged { index, applied })
     };
@@ -248,6 +248,10 @@ fn apply_in(txn: &WriteTransaction, proposal: &Proposal) -> Result<Outcome> {
         }
         Proposal::Shelve { replace, contents } => {
             let cl = match replace {
+                // The next number would otherwise make a new shelf.
+                Some(cl) if txn.open_table(SHELVES)?.get(cl.0)?.is_none() => {
+                    return Err(crate::Error::NotFound(format!("shelf {cl}")));
+                }
                 Some(cl) => *cl,
                 None => next_cl(txn)?,
             };

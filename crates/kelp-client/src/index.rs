@@ -5,7 +5,8 @@ use std::fs::Metadata;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use kelp_workspace::{Ignore, META_DIR};
+use kelp_workspace::Ignore;
+use kelp_workspace::ignore::is_meta_path;
 use serde::{Deserialize, Serialize};
 
 use crate::{Result, Workspace};
@@ -77,7 +78,7 @@ impl DiskIndex {
     /// Returns an error if the path exists but cannot be read.
     pub fn refresh(&mut self, ws: &Workspace, abs: &Path) -> Result<()> {
         let local = ws.relative(abs);
-        if local.is_empty() || local == META_DIR || local.starts_with(&format!("{META_DIR}/")) {
+        if local.is_empty() || is_meta_path(&local) {
             return Ok(());
         }
         let prefix = format!("{local}/");
@@ -85,7 +86,7 @@ impl DiskIndex {
             .retain(|l, _| *l != local && !l.starts_with(&prefix));
         match std::fs::symlink_metadata(abs) {
             Ok(meta) if meta.is_file() => {
-                if !Ignore::load(ws.root())?.is_ignored(&local) {
+                if !(Ignore::load(ws.root())?.is_ignored(&local) || ws.in_artifact_dir(&local)) {
                     self.files.insert(local, DiskEntry::of(&meta));
                 }
             }

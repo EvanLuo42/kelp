@@ -23,7 +23,13 @@ pub(super) enum Origin {
     Replicated,
 }
 
-pub(super) fn apply(txn: &WriteTransaction, cmd: &Command, origin: Origin) -> Result<Applied> {
+/// Applies `cmd` on behalf of `actor`, the user it is logged under.
+pub(super) fn apply(
+    txn: &WriteTransaction,
+    cmd: &Command,
+    origin: Origin,
+    actor: &str,
+) -> Result<Applied> {
     match cmd {
         Command::CreateUser {
             name,
@@ -247,6 +253,10 @@ pub(super) fn apply(txn: &WriteTransaction, cmd: &Command, origin: Origin) -> Re
             };
             streams.insert(path.key(), enc(&stream).as_slice())?;
             drop(streams);
+            // A stream deleted before deleting dropped its views may have
+            // left some under this path.
+            super::streams::forget_views(txn, path.key())?;
+            super::streams::set_owner(txn, path, actor)?;
             if let Some(p) = parent {
                 set_integration(
                     txn,
@@ -378,10 +388,12 @@ pub(super) fn apply(txn: &WriteTransaction, cmd: &Command, origin: Origin) -> Re
             domain,
             paths,
         } => {
+            // Domains are folded stream paths; older logs folded differently.
+            let domain = fold(&domain.0);
             let mut locks = txn.open_table(LOCKS)?;
             let mut conflicts = Vec::new();
             for path in paths {
-                if let Some(v) = locks.get((domain.0.as_str(), fold(path).as_str()))? {
+                if let Some(v) = locks.get((domain.as_str(), fold(path).as_str()))? {
                     let lock: Lock = dec("locks", v.value())?;
                     if lock.holder != *holder {
                         conflicts.push(format!(
@@ -400,7 +412,7 @@ pub(super) fn apply(txn: &WriteTransaction, cmd: &Command, origin: Origin) -> Re
                     holder: holder.clone(),
                 };
                 locks.insert(
-                    (domain.0.as_str(), fold(path).as_str()),
+                    (domain.as_str(), fold(path).as_str()),
                     enc(&lock).as_slice(),
                 )?;
             }
@@ -410,17 +422,18 @@ pub(super) fn apply(txn: &WriteTransaction, cmd: &Command, origin: Origin) -> Re
             domain,
             paths,
         } => {
+            let domain = fold(&domain.0);
             let mut locks = txn.open_table(LOCKS)?;
             for path in paths {
                 let key = fold(path);
-                let held_by_other = match locks.get((domain.0.as_str(), key.as_str()))? {
+                let held_by_other = match locks.get((domain.as_str(), key.as_str()))? {
                     Some(v) => holder.as_ref().is_some_and(|h| {
                         dec::<Lock>("locks", v.value()).is_ok_and(|l| l.holder != *h)
                     }),
                     None => true,
                 };
                 if !held_by_other {
-                    locks.remove((domain.0.as_str(), key.as_str()))?;
+                    locks.remove((domain.as_str(), key.as_str()))?;
                 }
             }
         }

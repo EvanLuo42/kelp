@@ -18,9 +18,33 @@ fn contents(f: &MetaFixture, cl: u64, platform: &str, bytes: &[u8]) -> ArtifactC
     }
 }
 
+/// Submits `n` changelists to `//game/main`, numbered from 1.
+fn submits(f: &MetaFixture, n: u64) {
+    for i in 1..=n {
+        let path = format!("//game/main/f{i}.txt");
+        f.submit("//game/main", vec![f.add(&path, format!("source {i}").as_bytes())])
+            .unwrap();
+    }
+}
+
+#[test]
+fn artifacts_of_changelists_the_stream_does_not_have_are_refused() {
+    let f = MetaFixture::new();
+    submits(&f, 2);
+    let published = f.db().publish_artifact(contents(&f, 3, "win64", b"x"));
+    assert!(
+        matches!(published, Err(Error::NotFound(_))),
+        "{published:?}"
+    );
+    f.db()
+        .publish_artifact(contents(&f, 2, "win64", b"x"))
+        .unwrap();
+}
+
 #[test]
 fn artifacts_resolve_to_the_nearest_changelist_at_or_below() {
     let f = MetaFixture::new();
+    submits(&f, 8);
     for cl in [3, 5, 8] {
         f.db()
             .publish_artifact(contents(&f, cl, "win64", format!("build {cl}").as_bytes()))
@@ -70,6 +94,7 @@ fn artifacts_resolve_to_the_nearest_changelist_at_or_below() {
 #[test]
 fn retention_expires_old_artifacts_unless_pinned() {
     let f = MetaFixture::new();
+    submits(&f, 5);
     let (_, first) = f
         .db()
         .publish_artifact(contents(&f, 1, "win64", b"1"))
@@ -105,6 +130,7 @@ fn retention_expires_old_artifacts_unless_pinned() {
 #[test]
 fn artifacts_need_their_content() {
     let f = MetaFixture::new();
+    submits(&f, 1);
     let mut c = contents(&f, 1, "win64", b"x");
     c.files[0].1.content = ContentId::of(b"never uploaded");
     assert!(matches!(

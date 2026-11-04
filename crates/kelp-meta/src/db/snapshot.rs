@@ -53,6 +53,7 @@ macro_rules! for_each_table {
             MOVES,
             PROFILES,
             EMAIL_OWNERS,
+            STREAM_OWNERS,
             CONTENT_REFS);
         done
     }};

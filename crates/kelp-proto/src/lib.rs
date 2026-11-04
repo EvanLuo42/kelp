@@ -22,7 +22,28 @@ pub use rpc::{ErrorKind, ErrorReply, Reply, Request, RequestClass};
 pub const ALPN: &[u8] = b"kelp/1";
 
 /// The highest protocol version this build speaks.
-pub const PROTOCOL_VERSION: u16 = 1;
+///
+/// Messages are postcard-encoded, which carries no field names and
+/// identifies enum variants by position, so a peer decodes a message only
+/// if it has exactly the same shape. Appending an enum variant is
+/// compatible. Anything else, such as adding, removing or reordering a
+/// struct field or inserting a variant before others, changes the wire
+/// format: bump this and [`MIN_PROTOCOL_VERSION`] together so that older
+/// peers are refused at the [`Hello`] instead of misreading messages.
+///
+/// Version history:
+///
+/// 1. Kelp 0.1.0.
+/// 2. User profiles: `Request::EditProfile` was inserted before
+///    `Request::Raft`, and `UserInfo`, `ChangeSummary` and `ReviewSummary`
+///    gained fields.
+pub const PROTOCOL_VERSION: u16 = 2;
+
+/// The lowest protocol version this build speaks.
+///
+/// The [`Hello`], [`Welcome`] and [`ErrorReply`] messages never change
+/// shape, so a peer of any version can read the error that refuses it.
+pub const MIN_PROTOCOL_VERSION: u16 = 2;
 
 /// The default port of `kelp-server`.
 pub const DEFAULT_PORT: u16 = 7474;

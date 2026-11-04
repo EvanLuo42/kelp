@@ -83,15 +83,27 @@ impl Home {
         fs::create_dir_all(&self.dir)?;
         let path = self.credentials_path();
         let tmp = path.with_extension("tmp");
-        fs::write(
-            &tmp,
-            toml::to_string_pretty(credentials).expect("credentials serialize"),
-        )?;
-        #[cfg(unix)]
+        // A leftover from an interrupted save may have other permissions,
+        // which opening an existing file would keep.
+        if let Err(e) = fs::remove_file(&tmp)
+            && e.kind() != std::io::ErrorKind::NotFound
         {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+            return Err(e.into());
         }
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Readable by the user alone from the start, not once written.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&tmp)?;
+        std::io::Write::write_all(
+            &mut file,
+            toml::to_string_pretty(credentials)
+                .expect("credentials serialize")
+                .as_bytes(),
+        )?;
+        file.sync_all()?;
+        drop(file);
         fs::rename(tmp, path)?;
         Ok(())
     }

@@ -5,10 +5,10 @@ use redb::{ReadableTable, WriteTransaction};
 
 use super::nodes::TxnNodes;
 use super::{
-    CHANGES, REVIEWS, REVISIONS, SHELVES, STREAM_CHANGES, STREAM_ROOTS, STREAMS, VIEWS, dec, enc,
-    stream_relative,
+    CHANGES, META, OBLITERATED, REVIEWS, REVISIONS, SHELVES, STREAM_CHANGES, STREAM_ROOTS, STREAMS,
+    VIEWS, dec, enc, stream_relative,
 };
-use crate::record::{Changelist, Review, Shelf, Stream};
+use crate::record::{Changelist, Import, Review, Shelf, Stream};
 use crate::{Dirs, EntryKind, Error, Result};
 
 /// A parsed obliterate argument.
@@ -160,17 +160,27 @@ pub(super) fn apply(txn: &WriteTransaction, args: &[String]) -> Result<()> {
                 .get((stream.path.key(), number))?
                 .map(|v| super::imports::decode_tree(v.value()))
                 .transpose()?;
-            if let Some(root) = separate {
-                let root = rewrite(root)?;
-                roots.insert((stream.path.key(), number), root.0.0.as_slice())?;
-                continue;
-            }
             let mut record: Changelist = match changes.get(number)? {
                 Some(v) => dec("changes", v.value())?,
                 None => return Err(Error::NotFound(format!("changelist {}", ClNumber(number)))),
             };
+            // The changelist lists the paths as its own stream sees them,
+            // which below an import stand for paths of the import's source.
+            let imports = super::imports::view_imports(txn, &record.stream, ClNumber(number))?;
+            let before = record.changes.len();
+            record.changes.retain(|c| {
+                !matches(&c.path) && !matches(&real_path(&record.stream, &imports, &c.path))
+            });
+            let scrubbed = record.changes.len() != before;
+            if let Some(root) = separate {
+                let root = rewrite(root)?;
+                roots.insert((stream.path.key(), number), root.0.0.as_slice())?;
+                if scrubbed {
+                    changes.insert(number, enc(&record).as_slice())?;
+                }
+                continue;
+            }
             record.root = rewrite(record.root)?;
-            record.changes.retain(|c| !matches(&c.path));
             changes.insert(number, enc(&record).as_slice())?;
         }
         stream.root = rewrite(stream.root)?;
@@ -188,15 +198,20 @@ pub(super) fn apply(txn: &WriteTransaction, args: &[String]) -> Result<()> {
         .collect::<Result<_>>()?;
     for mut shelf in all {
         let before = shelf.contents.files.len();
+        let imports = super::imports::load(txn, &shelf.contents.stream)?;
+        let stream = shelf.contents.stream.clone();
+        let gone = |f: &crate::FileChange| {
+            matches(&f.path) || matches(&real_path(&stream, &imports, &f.path))
+        };
         forgotten.extend(
             shelf
                 .contents
                 .files
                 .iter()
-                .filter(|f| matches(&f.path))
+                .filter(|f| gone(f))
                 .filter_map(|f| Some((f.action.data()?.content, f.path.clone()))),
         );
-        shelf.contents.files.retain(|f| !matches(&f.path));
+        shelf.contents.files.retain(|f| !gone(f));
         match (shelf.contents.files.len(), before) {
             (0, _) => {
                 shelves.remove(shelf.number.0)?;
@@ -221,10 +236,13 @@ pub(super) fn apply(txn: &WriteTransaction, args: &[String]) -> Result<()> {
         for row in reviews.iter()? {
             let (k, v) = row?;
             let mut review: Review = dec("reviews", v.value())?;
+            let imports = super::imports::load(txn, &review.stream)?;
             let mut found = false;
             for version in &mut review.versions {
                 let before = version.files.len();
-                version.files.retain(|f| !matches(&f.path));
+                version.files.retain(|f| {
+                    !matches(&f.path) && !matches(&real_path(&review.stream, &imports, &f.path))
+                });
                 found |= version.files.len() != before;
             }
             if found {
@@ -279,7 +297,28 @@ pub(super) fn apply(txn: &WriteTransaction, args: &[String]) -> Result<()> {
         txn.open_table(VIEWS)?
             .insert((key.as_str(), cl), root.0.0.as_slice())?;
     }
+    drop(nodes);
+    // Trees of old changelists now have new nodes, which a collection
+    // that marked before this did not see; see `MetaDb::sweep_nodes`.
+    let next = super::next_cl(txn)?;
+    txn.open_table(META)?.insert(OBLITERATED, next.0)?;
     Ok(())
+}
+
+/// Returns the path that `path`, as `stream` with `imports` sees it, stands
+/// for: the path in an import's source below an import, or `path` itself.
+fn real_path(stream: &DepotPath, imports: &[Import], path: &DepotPath) -> DepotPath {
+    let Some(rel) = stream_relative(stream, path) else {
+        return path.clone();
+    };
+    match super::imports::route(imports, &rel) {
+        Some((import, source_rel)) if source_rel.is_empty() => import.source.clone(),
+        Some((import, source_rel)) => import
+            .source
+            .join(&source_rel)
+            .unwrap_or_else(|_| path.clone()),
+        None => path.clone(),
+    }
 }
 
 /// Adds, for each pattern inside a stream, the same path in every stream

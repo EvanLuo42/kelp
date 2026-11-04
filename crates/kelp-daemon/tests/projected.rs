@@ -188,9 +188,14 @@ async fn projected_workspaces_download_on_first_use() {
     );
     assert_eq!(cached_chunks(&bob), before);
 
-    // Unmounting and mounting again keeps the workspace.
-    op(&bob, Op::Unmount).await;
+    // Unmounting, from anywhere in the workspace, and mounting again keeps
+    // the workspace.
+    call(bob.home(), &root.join("Content"), Op::Unmount)
+        .await
+        .unwrap();
     assert!(std::fs::read_dir(&root).unwrap().next().is_none());
+    let err = call(bob.home(), &root, Op::Unmount).await.unwrap_err();
+    assert!(err.to_string().contains("not mounted"), "{err}");
     call(bob.home(), &root, Op::Mount { upper }).await.unwrap();
     assert!(!root.join("Source/main.rs").exists());
     assert_eq!(

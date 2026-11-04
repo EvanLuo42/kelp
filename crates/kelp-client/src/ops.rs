@@ -27,6 +27,9 @@ const LOCK_POLL: Duration = Duration::from_millis(50);
 const LOCK_NOTICE: Duration = Duration::from_millis(500);
 
 /// A workspace operation. Paths are absolute file system paths.
+///
+/// kelpd of one version executes a `Shutdown` sent by a client of another,
+/// so `Shutdown` must keep its variant index: add new variants after it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
     Sync {
@@ -292,7 +295,12 @@ impl Session {
         let mut lock = workspace_lock(&root)?;
         let mut waited = Duration::ZERO;
         let mut waiting = None;
-        while lock.try_write().is_err() {
+        // The guard that ends the wait is the one held: letting go of it to
+        // take it again would let another process slip in between.
+        let _guard = loop {
+            if let Ok(guard) = lock.try_write() {
+                break guard;
+            }
             if waited >= LOCK_WAIT {
                 return Err(Error::Busy);
             }
@@ -301,11 +309,10 @@ impl Session {
             }
             tokio::time::sleep(LOCK_POLL).await;
             waited += LOCK_POLL;
-        }
+        };
         if let Some(mut meter) = waiting {
             meter.add(1, 0);
         }
-        let _guard = lock.try_write().map_err(|_| Error::Busy)?;
         let mut ws = Workspace::open(&root)?;
         if let Some(projector) = self.projectors.lock().expect("projector lock").get(&root) {
             ws.set_projector(projector.clone());

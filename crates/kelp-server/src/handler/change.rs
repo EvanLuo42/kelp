@@ -109,6 +109,11 @@ pub(super) async fn submit(state: &Arc<State>, access: Access, args: SubmitArgs)
         )
         .await?;
     }
+    // Garbage collection must not sweep content this submit refers to
+    // while it commits: it waits for the fence, and spares what the
+    // leases name once it has it.
+    let _fence = state.sweep.read().await;
+    touch_contents(state, &changes);
     let submission = Submission {
         stream,
         author: access.name().to_owned(),
@@ -127,6 +132,17 @@ pub(super) async fn submit(state: &Arc<State>, access: Access, args: SubmitArgs)
     };
     let (_, cl, root) = state.propose(proposal).await?.submitted();
     Ok(Reply::Submitted { cl: cl.0, root })
+}
+
+/// Renews the leases of the content `changes` refer to.
+fn touch_contents(state: &State, changes: &[FileChange]) {
+    state.leases.touch(
+        changes
+            .iter()
+            .filter_map(|c| c.action.data())
+            .map(|d| d.content.0),
+        state.clock.now(),
+    );
 }
 
 pub(super) fn filelog(state: &State, access: &Access, path: String) -> Response {
@@ -303,6 +319,9 @@ pub(super) async fn shelve(
             ));
         }
     }
+    // As for submits.
+    let _fence = state.sweep.read().await;
+    touch_contents(state, &files);
     let contents = ShelfContents {
         stream,
         owner: access.name().to_owned(),

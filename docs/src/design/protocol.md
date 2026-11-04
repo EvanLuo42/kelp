@@ -15,6 +15,7 @@ The header is 16 bytes, little-endian.
 There are six message types: `Hello`, `Welcome`, `Error`, `Request`, `Reply` and `Chunk`.
 Operations are variants of the `Request` and `Reply` enums.
 New variants are only appended, so an older peer still decodes the ones it knows.
+Any other change to a message, such as a new field, changes the protocol version; see below.
 
 A client writes a `Request` frame, followed by `Chunk` frames for an upload, and closes its side.
 The server answers with a `Reply` or an `Error`, preceded by `Chunk` frames for a download.
@@ -28,6 +29,10 @@ An older peer rejects a split message as malformed, which is no worse than the s
 
 The client sends `Hello { min_version, max_version, capabilities, auth }`, where `auth` optionally carries a token.
 The server answers `Welcome { version, role, log_index, capabilities, user }`.
+The version is the highest one both sides speak.
+If there is none, the server answers with an `Error` that says which side to upgrade, and refuses requests on that connection.
+`Hello`, `Welcome` and `Error` never change shape, so peers of every version can read them.
+Servers check the version an upstream server or another commit group member accepted in the same way.
 Capabilities are bits.
 `CONTENT_ACCESS` (bit 4) says the server checks read permission on content fetched by its hash, so clients ask for chunks with `GetContentChunks`, naming the content each chunk belongs to.
 Without a token, only login requests are allowed.

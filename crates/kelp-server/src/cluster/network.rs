@@ -114,6 +114,8 @@ impl Peer {
                 let c = Connection::connect(&self.addr, trust, Auth::None)
                     .await
                     .map_err(|e| CallError::Unreachable(Unreachable::new(&e)))?;
+                crate::handler::check_peer_version(&c)
+                    .map_err(|e| CallError::Unreachable(Unreachable::new(&e)))?;
                 // A member accepts a message larger than a frame only on a
                 // connection that has shown the group's secret, so introduce
                 // this one with a small message first.

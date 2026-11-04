@@ -1691,6 +1691,7 @@ dependencies = [
  "tokio",
  "toml",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1700,7 +1701,9 @@ dependencies = [
  "blake3",
  "globset",
  "kelp-testkit",
+ "postcard",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "toml",
  "unicode-normalization",
@@ -1717,6 +1720,7 @@ dependencies = [
  "kelp-vfs",
  "kelp-workspace",
  "notify",
+ "postcard",
  "serde",
  "tokio",
  "toml",
@@ -1737,6 +1741,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

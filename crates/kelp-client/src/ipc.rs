@@ -61,7 +61,9 @@ pub async fn connect(home: &Home) -> std::io::Result<impl AsyncRead + AsyncWrite
 ///
 /// # Errors
 ///
-/// Returns an error if no kelpd is listening.
+/// Returns an error if no kelpd is listening, or if the process serving
+/// the pipe runs as another user: pipe names are global, so anyone could
+/// create one first and receive the requests.
 #[cfg(windows)]
 pub async fn connect(home: &Home) -> std::io::Result<impl AsyncRead + AsyncWrite + Unpin> {
     const ERROR_PIPE_BUSY: i32 = 231;
@@ -75,8 +77,94 @@ pub async fn connect(home: &Home) -> std::io::Result<impl AsyncRead + AsyncWrite
                 attempts += 1;
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            result => return result,
+            Ok(pipe) => {
+                server_is_this_user(&pipe)?;
+                return Ok(pipe);
+            }
+            Err(e) => return Err(e),
         }
+    }
+}
+
+/// Returns an error unless the process serving `pipe` runs as the same user
+/// as this one.
+#[cfg(windows)]
+fn server_is_this_user(
+    pipe: &tokio::net::windows::named_pipe::NamedPipeClient,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    /// A handle closed when dropped.
+    struct Owned(HANDLE);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            // SAFETY: the handle was opened for this value and is closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Returns the `TOKEN_USER` of `process`, in a buffer aligned for it.
+    fn token_user(process: HANDLE) -> std::io::Result<Vec<u64>> {
+        let mut token: HANDLE = std::ptr::null_mut();
+        // SAFETY: `token` is a valid place for the handle.
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+            return Err(Error::last_os_error());
+        }
+        let token = Owned(token);
+        let mut len = 0u32;
+        // SAFETY: a null buffer of length 0 only asks for the length.
+        unsafe { GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut len) };
+        if (len as usize) < size_of::<TOKEN_USER>() {
+            return Err(Error::last_os_error());
+        }
+        let mut buf = vec![0u64; (len as usize).div_ceil(size_of::<u64>())];
+        // SAFETY: `buf` holds at least `len` writable bytes.
+        let ok = unsafe {
+            GetTokenInformation(token.0, TokenUser, buf.as_mut_ptr().cast(), len, &mut len)
+        };
+        if ok == 0 {
+            return Err(Error::last_os_error());
+        }
+        Ok(buf)
+    }
+
+    let mut pid = 0u32;
+    // SAFETY: the handle is a connected pipe and `pid` a valid place.
+    if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: plain call; a null handle reports failure.
+    let server = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if server.is_null() {
+        return Err(Error::last_os_error());
+    }
+    let server = Owned(server);
+    // SAFETY: the pseudo handle of this process needs no closing.
+    let ours = token_user(unsafe { GetCurrentProcess() })?;
+    let theirs = token_user(server.0)?;
+    // SAFETY: both buffers hold a TOKEN_USER whose SID points into them,
+    // and they outlive the comparison.
+    let same = unsafe {
+        let ours = &*ours.as_ptr().cast::<TOKEN_USER>();
+        let theirs = &*theirs.as_ptr().cast::<TOKEN_USER>();
+        EqualSid(ours.User.Sid, theirs.User.Sid) != 0
+    };
+    match same {
+        true => Ok(()),
+        false => Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "the kelpd pipe is served by a process of another user",
+        )),
     }
 }
 

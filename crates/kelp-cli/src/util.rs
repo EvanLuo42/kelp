@@ -207,15 +207,33 @@ pub fn os_user() -> Option<String> {
 
 pub fn read_password(from_stdin: bool, prompt: &str, confirm: bool) -> anyhow::Result<String> {
     if from_stdin {
-        let mut line = String::new();
-        std::io::stdin().lock().read_line(&mut line)?;
-        return Ok(line.trim_end_matches(['\r', '\n']).to_owned());
+        return read_line_password(std::io::stdin().lock());
     }
     let password = rpassword::prompt_password(prompt)?;
     if confirm && rpassword::prompt_password("Repeat: ")? != password {
         bail!("passwords do not match");
     }
     Ok(password)
+}
+
+/// Like [`read_password`], for a password being set: it must not be empty.
+pub fn read_new_password(from_stdin: bool, prompt: &str, confirm: bool) -> anyhow::Result<String> {
+    let password = read_password(from_stdin, prompt, confirm)?;
+    if password.is_empty() {
+        bail!("the password must not be empty");
+    }
+    Ok(password)
+}
+
+/// Reads a password from the first line of `input`. Running out of input
+/// before a line is an error rather than an empty password, so that a
+/// missing pipe cannot set or try one.
+fn read_line_password(mut input: impl BufRead) -> anyhow::Result<String> {
+    let mut line = String::new();
+    if input.read_line(&mut line)? == 0 {
+        bail!("expected a password on standard input");
+    }
+    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 
 /// Parses `default`, `L3` or `3` as a pending changelist id.
@@ -268,4 +286,25 @@ pub fn workspace_name(dir: &Path) -> String {
         if base.is_empty() { "ws" } else { &base },
         &blake3::hash(seed.as_bytes()).to_hex()[..8]
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_line_password;
+
+    #[test]
+    fn a_password_on_stdin_is_one_line() {
+        assert_eq!(
+            read_line_password(&b"s3cret\r\nmore"[..]).unwrap(),
+            "s3cret"
+        );
+        assert_eq!(read_line_password(&b"s3cret"[..]).unwrap(), "s3cret");
+        assert_eq!(read_line_password(&b"\n"[..]).unwrap(), "");
+    }
+
+    #[test]
+    fn no_input_is_not_an_empty_password() {
+        let err = read_line_password(&b""[..]).unwrap_err();
+        assert!(err.to_string().contains("expected a password"), "{err}");
+    }
 }

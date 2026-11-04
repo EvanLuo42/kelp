@@ -77,8 +77,29 @@ impl Ignore {
 
     /// Returns `true` if the workspace path `rel` is ignored.
     ///
-    /// Kelp's own [`META_DIR`] is always ignored.
+    /// Kelp's own [`META_DIR`] is always ignored; see [`is_meta_path`].
     pub fn is_ignored(&self, rel: &str) -> bool {
-        rel == META_DIR || rel.starts_with(&format!("{META_DIR}/")) || self.set.is_match(rel)
+        is_meta_path(rel) || self.set.is_match(rel)
     }
+}
+
+/// Returns `true` if the workspace path `rel`, with `/` separators, is or
+/// lies below a directory named like [`META_DIR`], ignoring ASCII case.
+///
+/// Such paths are reserved: on a case-insensitive file system `.KELP` is
+/// Kelp's own directory, and a nested `.kelp` would make the directory
+/// holding it look like a workspace of its own.
+///
+/// # Examples
+///
+/// ```
+/// use kelp_workspace::ignore::is_meta_path;
+///
+/// assert!(is_meta_path(".kelp/state.bin"));
+/// assert!(is_meta_path(".KELP"));
+/// assert!(is_meta_path("Content/.Kelp/config.toml"));
+/// assert!(!is_meta_path("Content/.kelpignore"));
+/// ```
+pub fn is_meta_path(rel: &str) -> bool {
+    rel.split('/').any(|s| s.eq_ignore_ascii_case(META_DIR))
 }

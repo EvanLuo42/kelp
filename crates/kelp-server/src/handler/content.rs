@@ -57,6 +57,11 @@ pub(super) async fn put_chunks(state: &Arc<State>, count: u32, recv: &mut RecvSt
     Ok(Reply::Ok)
 }
 
+/// Sends the chunks `ids`.
+///
+/// Chunks are not checked against protections: chunk ids are BLAKE3 hashes,
+/// which act as capabilities, and a user learns them only from manifests,
+/// which [`get_manifests`] hands out only for content the user may read.
 pub(super) async fn get_chunks(
     state: &State,
     ids: Vec<ChunkId>,

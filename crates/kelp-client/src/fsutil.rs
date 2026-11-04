@@ -2,20 +2,11 @@
 
 use std::fs;
 use std::path::Path;
-use std::time::UNIX_EPOCH;
 
 use kelp_core::{ContentId, Hash};
 use kelp_workspace::HaveEntry;
 
 use crate::Result;
-
-/// Returns the modification time of `path` in nanoseconds since the Unix epoch.
-pub(crate) fn mtime(path: &Path) -> Result<u64> {
-    let modified = fs::metadata(path)?.modified()?;
-    Ok(modified
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64))
-}
 
 /// Returns the content id of the file at `path`.
 pub(crate) fn content_of(path: &Path) -> Result<ContentId> {
@@ -25,36 +16,54 @@ pub(crate) fn content_of(path: &Path) -> Result<ContentId> {
 }
 
 /// Returns `true` if the file at `path` still has the content of `have`.
-pub(crate) fn file_matches(path: &Path, have: &HaveEntry) -> Result<bool> {
+///
+/// See [`entry_matches`] for `recorded`.
+pub(crate) fn file_matches(path: &Path, have: &HaveEntry, recorded: u64) -> Result<bool> {
     let meta = match fs::metadata(path) {
         Ok(m) if m.is_file() => m,
         Ok(_) => return Ok(false),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e.into()),
     };
-    if meta.len() != have.size {
+    entry_matches(path, have, crate::index::DiskEntry::of(&meta), recorded)
+}
+
+/// Returns `true` if the file at `path`, whose metadata is `entry`, still has
+/// the content of `have`, which was recorded no later than `recorded`
+/// nanoseconds since the Unix epoch.
+///
+/// The file is hashed unless [`mtime_trusted`] says its modification time
+/// tells.
+pub(crate) fn entry_matches(
+    path: &Path,
+    have: &HaveEntry,
+    entry: crate::index::DiskEntry,
+    recorded: u64,
+) -> Result<bool> {
+    if entry.size != have.size {
         return Ok(false);
     }
-    if mtime(path)? == have.mtime {
+    if mtime_trusted(have, entry, recorded) {
         return Ok(true);
     }
     Ok(content_of(path)? == have.content)
 }
 
-/// Returns `true` if the file at `path`, whose metadata is `entry`, still has
-/// the content of `have`.
-pub(crate) fn entry_matches(
-    path: &Path,
+/// Returns `true` if a file whose metadata is `entry` can be assumed to
+/// still have the content of `have` without hashing it.
+///
+/// That needs the modification times to match, and that of `have` to be
+/// clearly older than `recorded`, the time `have` was recorded by the clock
+/// of the file system: a write in the same clock tick as the one `have`
+/// observed would leave the time unchanged, as git's "racy" entries do.
+/// A time of 0, which `have` uses for "unknown" and a file may have when its
+/// time cannot be read, never matches.
+pub(crate) fn mtime_trusted(
     have: &HaveEntry,
     entry: crate::index::DiskEntry,
-) -> Result<bool> {
-    if entry.size != have.size {
-        return Ok(false);
-    }
-    if entry.mtime == have.mtime {
-        return Ok(true);
-    }
-    Ok(content_of(path)? == have.content)
+    recorded: u64,
+) -> bool {
+    have.mtime != 0 && entry.mtime == have.mtime && have.mtime < recorded
 }
 
 #[cfg(unix)]

@@ -75,9 +75,13 @@ impl Mounts {
 
     /// Mounts the workspace whose files live in `upper` at `root`, and
     /// registers it so that kelpd mounts it again after a restart.
+    ///
+    /// Mounts are known by the canonical form of `root`, the same path the
+    /// session finds the workspace by, however `root` was spelled.
     pub fn mount(&self, root: &Path, upper: &Path) -> io::Result<()> {
+        let canonical = std::fs::canonicalize(root)?;
         let mut mounted = self.mounted.lock().expect("mounts lock");
-        if mounted.contains_key(root) {
+        if mounted.contains_key(&canonical) {
             return Ok(());
         }
         let ws = Workspace::open(upper).map_err(io::Error::other)?;
@@ -106,33 +110,44 @@ impl Mounts {
             hydrator,
         };
         let mount = kelp_vfs::mount(config)?;
-        let canonical = std::fs::canonicalize(root)?;
         let live = Arc::new(AtomicBool::new(true));
         let projector = Arc::new(Adapter(mount.projection(), live.clone()));
         self.session.set_projector(&canonical, Some(projector));
-        mounted.insert(root.to_owned(), (mount, live));
+        mounted.insert(canonical.clone(), (mount, live));
         drop(mounted);
 
+        // Registries written before mounts were known by canonical paths
+        // may spell the same workspace differently.
         let mut registry = self.registry();
-        let entry = Entry {
-            root: root.to_owned(),
-            upper: upper.to_owned(),
-        };
-        if !registry.workspaces.contains(&entry) {
-            registry.workspaces.push(entry);
+        let known = registry
+            .workspaces
+            .iter()
+            .any(|e| e.upper == upper && same_path(&e.root, &canonical));
+        if !known {
+            registry.workspaces.push(Entry {
+                root: root.to_owned(),
+                upper: upper.to_owned(),
+            });
             self.save(&registry)?;
         }
         Ok(())
     }
 
-    /// Unmounts the workspace at `root`. It stays registered.
-    pub fn unmount(&self, root: &Path) -> io::Result<()> {
-        if let Ok(canonical) = std::fs::canonicalize(root) {
-            self.session.set_projector(&canonical, None);
-        }
-        let removed = self.mounted.lock().expect("mounts lock").remove(root);
-        let (mount, live) =
-            removed.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not mounted"))?;
+    /// Unmounts the workspace at or around `dir`. It stays registered.
+    pub fn unmount(&self, dir: &Path) -> io::Result<()> {
+        let dir = std::fs::canonicalize(dir)?;
+        let mut mounted = self.mounted.lock().expect("mounts lock");
+        // The deepest mount containing `dir`, so that unmounting works from
+        // anywhere in the workspace.
+        let root = mounted
+            .keys()
+            .filter(|root| dir.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not mounted"))?;
+        let (mount, live) = mounted.remove(&root).expect("mount found above");
+        drop(mounted);
+        self.session.set_projector(&root, None);
         live.store(false, Ordering::SeqCst);
         drop(mount);
         Ok(())
@@ -159,6 +174,11 @@ impl Mounts {
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, &self.registry_path)
     }
+}
+
+/// Returns whether `path` names `canonical`, or did when it still existed.
+fn same_path(path: &Path, canonical: &Path) -> bool {
+    std::fs::canonicalize(path).map_or(path == canonical, |p| p == canonical)
 }
 
 /// Fetches content from the local cache, or the server when it is missing.

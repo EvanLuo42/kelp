@@ -116,7 +116,18 @@ pub(super) async fn gc(state: &Arc<State>, access: &Access, dry_run: bool) -> Re
     // submitted, so it is spared.
     let _fence = state.sweep.write().await;
     let leased = state.leases.current(state.clock.now());
-    dead_chunks.retain(|id| !leased.contains(&id.0));
+    // A submit leases the content it refers to, not the chunks; spare
+    // the chunks of leased content too.
+    let mut spared: HashSet<Hash> = leased.clone();
+    {
+        let reader = state.reader()?;
+        for id in &leased {
+            if let Some(manifest) = reader.manifest(&ContentId(*id)).map_err(meta_error)? {
+                spared.extend(manifest.chunks.iter().map(|c| c.id.0));
+            }
+        }
+    }
+    dead_chunks.retain(|id| !spared.contains(&id.0));
     dead_manifests.retain(|c| !leased.contains(&c.0));
     report.chunks_kept = (stored.len() - dead_chunks.len()) as u64;
     report.chunks_deleted = dead_chunks.len() as u64;

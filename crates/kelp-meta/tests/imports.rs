@@ -283,6 +283,57 @@ fn obliterating_keeps_the_imports_each_view_had() {
 }
 
 #[test]
+fn obliterating_a_source_file_scrubs_what_importers_submitted_and_shelved() {
+    let f = setup();
+    set(&f, vec![import(None, true)]).unwrap();
+    let cl = f
+        .submit(
+            "//game/main",
+            vec![
+                f.edit("//game/main/Engine/a.h", b"v1", b"secret"),
+                f.edit("//game/main/Code/main.cpp", b"main", b"uses it"),
+            ],
+        )
+        .unwrap();
+    let shelf = f
+        .db()
+        .shelve(
+            None,
+            kelp_meta::ShelfContents {
+                stream: p("//game/main"),
+                owner: "alice".into(),
+                workspace: "ws".into(),
+                description: "wip".into(),
+                files: vec![
+                    f.edit("//game/main/Engine/a.h", b"secret", b"more secret"),
+                    f.edit("//game/main/Code/main.cpp", b"uses it", b"wip"),
+                ],
+                at: 3,
+            },
+        )
+        .unwrap();
+
+    f.db()
+        .commit(Command::Obliterate {
+            paths: vec!["//engine/main/Source/a.h".into()],
+        })
+        .unwrap();
+    let r = f.db().read().unwrap();
+    let paths = |changes: &[kelp_meta::FileChange]| -> Vec<String> {
+        changes.iter().map(|c| c.path.to_string()).collect()
+    };
+    let record = r.changelist(cl).unwrap().unwrap();
+    assert_eq!(paths(&record.changes), ["//game/main/Code/main.cpp"]);
+    let shelf = r.shelf(shelf).unwrap().unwrap();
+    assert_eq!(paths(&shelf.contents.files), ["//game/main/Code/main.cpp"]);
+    assert!(
+        r.revisions(&p("//engine/main/Source/a.h"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn review_rules_of_the_source_govern_writable_imports() {
     let f = setup();
     set(&f, vec![import(None, true)]).unwrap();
