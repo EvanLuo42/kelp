@@ -89,6 +89,7 @@ impl Edge {
             let trust = Trust::Pinned(self.upstream.fingerprint.clone());
             match Connection::connect(&addrs[i], trust, auth.clone()).await {
                 Ok(conn) => {
+                    crate::handler::check_peer_version(&conn)?;
                     self.current.store(i, Ordering::Relaxed);
                     return Ok(conn);
                 }

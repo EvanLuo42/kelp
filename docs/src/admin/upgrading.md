@@ -10,8 +10,27 @@ On start, a newer server migrates an older format in a single transaction, so a 
 An older server refuses a directory that a newer version has written, with an error that ends in `upgrade Kelp`.
 There is no downgrade: once a newer server has started on a data directory, only a backup brings the old version back.
 
-Clients and servers agree on a wire protocol version when they connect, so clients do not have to be upgraded at the same time as the server.
-The [changelog](https://github.com/EvanLuo42/kelp/blob/main/CHANGELOG.md) notes anything a release asks of clients.
+## Protocol versions
+
+Clients and servers agree on a wire protocol version when they connect.
+Each release speaks a range of protocol versions, and a connection works when the two ranges overlap.
+When they do not, the server refuses the connection with an error that names both ranges and says which side to upgrade, for example:
+
+```text
+this server speaks Kelp protocol versions 2 to 2 and kelp-client/0.1.0 speaks 1 to 1; upgrade the client ...
+```
+
+Most releases keep the protocol versions of the one before, so clients do not have to be upgraded at the same time as the server.
+A release that drops an old protocol version says so in the [changelog](https://github.com/EvanLuo42/kelp/blob/main/CHANGELOG.md).
+After upgrading to such a release, every client, `kelpd` daemon and edge that talks to the server has to be upgraded as well, and the members of a commit group have to be upgraded together, as below.
+
+| Kelp version | Protocol versions |
+|---|---|
+| 0.1.0 | 1 |
+| later | 2 |
+
+Protocol version 2 added user profiles, which changed the encoding of several messages, so clients of Kelp 0.1.0 cannot talk to newer servers and the other way round.
+A `kelpd` that was running before the CLI was upgraded keeps the old version until it exits, which it does after 30 minutes without requests; end the old `kelpd` process to switch at once.
 
 ## A single server
 
@@ -54,6 +73,7 @@ If the new binary lives somewhere else, run `service install` again from the new
 
 An edge only replicates from a commit server with the same database format.
 If the formats differ, the edge stops replicating and refuses requests until it is restarted with a matching version; it never serves stale or mis-read data.
+The same holds when the commit server no longer speaks the edge's protocol version: the edge cannot connect until it is upgraded too.
 
 Upgrade the commit server first, then every edge:
 
@@ -68,6 +88,7 @@ Clients of an edge cannot read or write through it between the commit server's r
 Members of a [commit group](commit-groups.md) exchange metadata log entries and snapshots in the database's own encoding, so every member must run the same version.
 A member refuses messages from a member with another database format and logs `run the same Kelp version on every member`, so a group with mixed versions loses those members rather than misreading their data.
 Do not upgrade one member at a time.
+Members also refuse connections from members whose [protocol versions](#protocol-versions) do not overlap with their own.
 
 Each member's Raft log (`raft.redb`) holds entries in the old encoding, which the new version cannot read.
 When a release changes the database format, a member starting on the new version drops its old log and writes a snapshot of its migrated database in its place, but only if it has already applied every entry in that log.

@@ -20,8 +20,8 @@ use kelp_meta::db::Reader;
 use kelp_meta::record::User;
 use kelp_proto::io::{expect_frame, write_message};
 use kelp_proto::{
-    Auth, Capabilities, ErrorKind, ErrorReply, Hello, MsgType, PROTOCOL_VERSION, Reply, Request,
-    RequestClass, Welcome,
+    Auth, Capabilities, ErrorKind, ErrorReply, Hello, MIN_PROTOCOL_VERSION, MsgType,
+    PROTOCOL_VERSION, Reply, Request, RequestClass, Welcome,
 };
 use quinn::{RecvStream, SendStream};
 use tracing::Instrument;
@@ -45,6 +45,9 @@ pub(crate) struct Session {
     token: Mutex<Option<String>>,
     /// An edge's connection to the commit server as this client's user.
     upstream: tokio::sync::Mutex<Option<Connection>>,
+    /// Whether the client's [`Hello`] was accepted. Requests before that
+    /// may come from a peer of an incompatible protocol version.
+    greeted: std::sync::atomic::AtomicBool,
 }
 
 impl Session {
@@ -207,6 +210,12 @@ async fn serve_stream(
             }
             None
         }
+        MsgType::Request if !session.greeted.load(std::sync::atomic::Ordering::Acquire) => {
+            Some(Err(ErrorReply::new(
+                ErrorKind::Invalid,
+                "a connection starts with a Hello; upgrade the client to the server's Kelp version",
+            )))
+        }
         MsgType::Request => {
             let request: Request = frame.decode()?;
             let (op, class) = (request.name(), request.class());
@@ -282,12 +291,9 @@ async fn hello_reply(
     session: &Session,
     hello: &Hello,
 ) -> Result<Welcome, ErrorReply> {
-    let version = hello.negotiate(1, PROTOCOL_VERSION).ok_or_else(|| {
-        ErrorReply::new(
-            ErrorKind::Invalid,
-            format!("server speaks protocol version {PROTOCOL_VERSION}"),
-        )
-    })?;
+    let version = hello
+        .negotiate(MIN_PROTOCOL_VERSION, PROTOCOL_VERSION)
+        .ok_or_else(|| version_mismatch(hello))?;
     let user = match &hello.auth {
         Auth::None => None,
         Auth::Bearer(token) => {
@@ -321,6 +327,9 @@ async fn hello_reply(
         Auth::None => None,
     });
     let reader = state.reader()?;
+    session
+        .greeted
+        .store(true, std::sync::atomic::Ordering::Release);
     Ok(Welcome {
         version,
         role: state.server_role(),
@@ -328,6 +337,39 @@ async fn hello_reply(
         capabilities: Capabilities::default(),
         user: name,
     })
+}
+
+/// The error refusing a peer that speaks none of this server's protocol
+/// versions. Its shape never changes, so peers of every version read it.
+fn version_mismatch(hello: &Hello) -> ErrorReply {
+    let ours = format!(
+        "this server speaks Kelp protocol versions {MIN_PROTOCOL_VERSION} to {PROTOCOL_VERSION}"
+    );
+    let theirs = format!(
+        "{} speaks {} to {}",
+        hello.client_name, hello.min_version, hello.max_version
+    );
+    let advice = match hello.max_version < MIN_PROTOCOL_VERSION {
+        true => "upgrade the client (or, for a commit group member or edge, that server) to the server's Kelp version",
+        false => "upgrade the server to the client's Kelp version",
+    };
+    ErrorReply::new(ErrorKind::Invalid, format!("{ours} and {theirs}; {advice}"))
+}
+
+/// Refuses a connection to a server that negotiated a protocol version
+/// this build no longer speaks. Clients older than this check offer
+/// version 1, which a version 1 server accepts.
+pub(crate) fn check_peer_version(conn: &Connection) -> Result<(), ErrorReply> {
+    let version = conn.welcome().version;
+    match version >= MIN_PROTOCOL_VERSION {
+        true => Ok(()),
+        false => Err(ErrorReply::new(
+            ErrorKind::Unavailable,
+            format!(
+                "the upstream server speaks Kelp protocol version {version} and this server {MIN_PROTOCOL_VERSION} to {PROTOCOL_VERSION}; upgrade the upstream server to this server's Kelp version"
+            ),
+        )),
+    }
 }
 
 /// Handles `request`, sending it on to the new leader if this member lost
