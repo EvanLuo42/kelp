@@ -2,7 +2,7 @@ use kelp_core::{ClNumber, DepotPath};
 use redb::{ReadableTable, WriteTransaction};
 
 use super::{CHANGES, MOVES, Reader, dec, enc, stream_relative};
-use crate::record::{Changelist, Revision};
+use crate::record::{Changelist, RevAction, Revision};
 use crate::{Error, FileAction, Result};
 
 /// How many moves a file's history is followed through.
@@ -60,20 +60,30 @@ impl Reader {
     /// Returns [`Error::Db`] or [`Error::CorruptRecord`] if a table cannot be read.
     pub fn history(&self, path: &DepotPath) -> Result<Vec<Revision>> {
         let moves = self.txn().open_table(MOVES)?;
-        let mut history = self.revisions(path)?;
-        let mut current = path.clone();
+        let mut history = Vec::new();
+        let mut segment = self.revisions(path)?;
         for _ in 0..MAX_MOVES {
-            let Some(first) = history.iter().rev().find(|r| r.path == current) else {
+            // The newest add starts the file's current life; a move into
+            // the path is recorded under that add's changelist.
+            let Some(start) = segment.iter().position(|r| r.action == RevAction::Add) else {
                 break;
             };
-            let Some(from) = moves.get((current.key(), first.cl.0))? else {
+            let added = &segment[start];
+            let Some(from) = moves.get((added.path.key(), added.cl.0))? else {
                 break;
             };
             let from: DepotPath = dec("moves", from.value())?;
-            let before = first.cl;
-            history.extend(self.revisions(&from)?.into_iter().filter(|r| r.cl < before));
-            current = from;
+            let before = added.cl;
+            // Older lives of the path belong to other files.
+            segment.truncate(start + 1);
+            history.append(&mut segment);
+            segment = self
+                .revisions(&from)?
+                .into_iter()
+                .filter(|r| r.cl < before)
+                .collect();
         }
+        history.append(&mut segment);
         Ok(history)
     }
 }
