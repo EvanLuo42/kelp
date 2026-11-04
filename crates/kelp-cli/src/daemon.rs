@@ -44,8 +44,7 @@ async fn execute_with(
         Ok(outcome) => return Ok(outcome),
         Err(Error::DaemonVersion(version)) => {
             tracing::info!("kelpd {version} is another version; restarting it");
-            let _ = ipc::call(home, cwd, Op::Shutdown).await;
-            wait_until(home, false).await;
+            stop(home, cwd, &version).await?;
         }
         Err(Error::Io(e)) => tracing::info!("kelpd is not reachable ({e}); starting it"),
         Err(e) => return Err(e.into()),
@@ -55,6 +54,102 @@ async fn execute_with(
     }
     eprintln!("warning: kelpd could not be started; running in this process");
     Ok(in_this_process(op).await?)
+}
+
+/// Asks the kelpd of another `version` to stop, and waits until it has.
+///
+/// An older kelpd answers every request of another version with its own
+/// version, even a shutdown, so it cannot be stopped from here. Rather than
+/// kill it, which could leave its projected workspaces mounted half way or
+/// cut an operation short, this tells the user how to stop it.
+async fn stop(home: &Home, cwd: &Path, version: &str) -> anyhow::Result<()> {
+    let (result, pid) = shutdown(home, cwd).await;
+    let refused = matches!(result, Err(Error::DaemonVersion(_)));
+    if let Err(e) = &result {
+        tracing::info!("kelpd did not take the shutdown: {e}");
+    }
+    if !refused && wait_until(home, false).await {
+        return Ok(());
+    }
+    let (process, command) = match pid {
+        Some(pid) if cfg!(windows) => (format!(" (process {pid})"), format!("taskkill /PID {pid}")),
+        Some(pid) => (format!(" (process {pid})"), format!("kill {pid}")),
+        None if cfg!(windows) => (String::new(), "taskkill /IM kelpd.exe".to_owned()),
+        None => (String::new(), "pkill -x kelpd".to_owned()),
+    };
+    anyhow::bail!(
+        "kelpd {version}{process} runs another version than this kelp {} and does not stop \
+         when asked; stop it with `{command}` and try again, or pass --no-daemon",
+        ipc::VERSION
+    )
+}
+
+/// Sends kelpd a shutdown, returning its answer and, where the platform
+/// tells, the id of its process.
+async fn shutdown(home: &Home, cwd: &Path) -> (kelp_client::Result<Outcome>, Option<u32>) {
+    use kelp_proto::MsgType;
+    use kelp_proto::io::{expect_frame, write_message};
+    let (mut stream, pid) = match connect_with_pid(home).await {
+        Ok(connected) => connected,
+        Err(e) => return (Err(e.into()), None),
+    };
+    let request = ipc::IpcRequest {
+        version: ipc::VERSION.to_owned(),
+        cwd: cwd.to_owned(),
+        op: Op::Shutdown,
+    };
+    let result = async {
+        write_message(&mut stream, MsgType::Request, &request).await?;
+        loop {
+            match expect_frame(&mut stream).await?.decode::<ipc::IpcReply>()? {
+                ipc::IpcReply::Ok(outcome) => return Ok(outcome),
+                ipc::IpcReply::Err(message) => return Err(Error::Daemon(message)),
+                ipc::IpcReply::VersionMismatch(v) => return Err(Error::DaemonVersion(v)),
+                ipc::IpcReply::Progress(_) => {}
+            }
+        }
+    }
+    .await;
+    (result, pid)
+}
+
+#[cfg(unix)]
+async fn connect_with_pid(home: &Home) -> std::io::Result<(tokio::net::UnixStream, Option<u32>)> {
+    let stream = tokio::net::UnixStream::connect(home.daemon_socket()).await?;
+    let pid = stream
+        .peer_cred()
+        .ok()
+        .and_then(|c| c.pid())
+        .and_then(|p| u32::try_from(p).ok());
+    Ok((stream, pid))
+}
+
+#[cfg(windows)]
+async fn connect_with_pid(
+    home: &Home,
+) -> std::io::Result<(tokio::net::windows::named_pipe::NamedPipeClient, Option<u32>)> {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetNamedPipeServerProcessId(pipe: *mut std::ffi::c_void, pid: *mut u32) -> i32;
+    }
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let name = ipc::pipe_name(home.dir());
+    let mut attempts = 0;
+    let pipe = loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(&name) {
+            // kelpd has no free pipe instance for a moment after each accept.
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && attempts < 200 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            result => break result?,
+        }
+    };
+    let mut pid = 0u32;
+    // SAFETY: the handle is an open pipe owned by `pipe`, and `pid` outlives the call.
+    let ok = unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) };
+    Ok((pipe, (ok != 0).then_some(pid)))
 }
 
 /// Starts kelpd next to the current executable and waits for it to listen.
