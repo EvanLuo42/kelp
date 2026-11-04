@@ -205,6 +205,47 @@ async fn sync_skips_files_that_map_into_kelp_directories() {
 }
 
 #[tokio::test]
+async fn reverting_a_delete_snapshots_a_file_created_again() {
+    let mut s = setup(&[("a.txt", "a\n")]).await;
+    s.ws.open_files(
+        &s.conn,
+        &[path("a.txt")],
+        OpenAction::Delete,
+        LocalClId::DEFAULT,
+    )
+    .await
+    .unwrap();
+    assert!(!s.client.sandbox().exists("ws/a.txt"));
+    s.client.sandbox().write("ws/a.txt", "written again\n");
+    s.ws.revert(&s.conn, &s.client.cache(), &[path("a.txt")])
+        .await
+        .unwrap();
+    assert_eq!(s.client.sandbox().read("ws/a.txt"), b"a\n");
+
+    let snapshot = s.ws.state().snapshots.last().expect("a snapshot was taken");
+    assert!(snapshot.automatic);
+    let file = &snapshot.files[0];
+    assert_eq!(
+        (file.path.clone(), file.action),
+        (path("a.txt"), OpenAction::Delete)
+    );
+    let saved = file.content.expect("the file on disk was saved");
+    assert_eq!(
+        s.client.cache().read(&saved.content).await.unwrap(),
+        b"written again\n"
+    );
+
+    // Restoring it brings back the delete and the file.
+    let id = snapshot.id;
+    s.ws.restore(&s.conn, &s.client.cache(), id).await.unwrap();
+    assert_eq!(
+        s.ws.state().pending.action(&path("a.txt")),
+        Some(OpenAction::Delete)
+    );
+    assert_eq!(s.client.sandbox().read("ws/a.txt"), b"written again\n");
+}
+
+#[tokio::test]
 async fn tracked_files_that_become_ignored_are_not_deleted() {
     let mut s = setup(&[("a.txt", "a\n"), ("Saved/log.txt", "log\n")]).await;
     s.client.sandbox().write("ws/.kelpignore", "Saved/\n");

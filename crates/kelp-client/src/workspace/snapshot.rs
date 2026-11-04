@@ -64,6 +64,9 @@ impl Workspace {
 
     /// Takes automatic snapshots of the opened files among `paths`, one per
     /// changelist, before an operation overwrites them.
+    ///
+    /// Files opened for delete are included: one may have been created again
+    /// on disk, and the snapshot records an absent one as such.
     pub(super) async fn auto_snapshot(
         &mut self,
         cache: &ContentCache,
@@ -72,12 +75,7 @@ impl Workspace {
     ) -> Result<()> {
         let opened: Vec<DepotPath> = paths
             .iter()
-            .filter(|p| {
-                self.state
-                    .pending
-                    .action(p)
-                    .is_some_and(|a| a != OpenAction::Delete)
-            })
+            .filter(|p| self.state.pending.action(p).is_some())
             .cloned()
             .collect();
         self.capture(cache, &opened, &format!("before {why}"), true)
