@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use kelp_core::{ContentId, DepotPath};
+use kelp_workspace::ignore::is_meta_path;
 use kelp_workspace::{Resolve, ResolveKind};
 
 use super::{ArtifactUpdate, ProjectedFile, Workspace, version};
@@ -15,7 +16,8 @@ pub enum SkipReason {
     Opened,
     /// The file was changed on disk without being opened.
     LocallyModified,
-    /// A file not known to the workspace is in the way.
+    /// A file not known to the workspace is in the way, or the file would
+    /// land in a directory reserved for Kelp's own files.
     Untracked,
 }
 
@@ -110,6 +112,12 @@ impl Workspace {
             };
             let have = self.have_version(&path);
             if have.map(|h| h.content) == target.map(|t| t.content) {
+                continue;
+            }
+            if is_meta_path(&local) {
+                // Writing there could replace Kelp's own files, or plant a
+                // workspace inside this one.
+                report.skipped.push((path, SkipReason::Untracked));
                 continue;
             }
             if self.state.pending.action(&path).is_some() {

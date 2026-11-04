@@ -19,6 +19,7 @@ use kelp_core::typemap::{FileKind, FileType, LockPolicy, Typemap};
 use kelp_core::{ContentId, DepotPath, LocalClId};
 use kelp_proto::rpc::FileInfo;
 use kelp_proto::{Reply, Request};
+use kelp_workspace::ignore::is_meta_path;
 use kelp_workspace::{
     Config, FileVersion, HaveEntry, Ignore, META_DIR, OpenAction, PendingChanges, State, View,
 };
@@ -440,10 +441,22 @@ impl Workspace {
         ty.lock == LockPolicy::None && ty.kind != FileKind::Binary
     }
 
+    /// Returns the workspace path `path` maps to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OutsideView`] if the view does not map `path`, and
+    /// [`Error::Invalid`] if it maps it into a directory named like
+    /// [`META_DIR`], where Kelp keeps its own files.
     fn view_map(&self, path: &DepotPath) -> Result<String> {
-        self.view
+        let local = self
+            .view
             .map(path)
-            .ok_or_else(|| Error::OutsideView(path.to_string()))
+            .ok_or_else(|| Error::OutsideView(path.to_string()))?;
+        if is_meta_path(&local) {
+            return Err(reserved(path));
+        }
+        Ok(local)
     }
 
     fn stream_relative(&self, path: &DepotPath) -> String {
@@ -592,6 +605,13 @@ impl Workspace {
             executable: h.executable,
         })
     }
+}
+
+/// The error for a file that maps into a directory reserved for Kelp.
+pub(crate) fn reserved(path: &DepotPath) -> Error {
+    Error::Invalid(format!(
+        "{path} maps into a {META_DIR} directory, which Kelp reserves for its own files"
+    ))
 }
 
 fn index_entries(index: &crate::DiskIndex) -> Vec<(String, DiskEntry)> {
