@@ -74,9 +74,11 @@ impl Forwarder<'_> {
             Self::Leader(membership) => {
                 let addr = membership.started()?.leader_addr().await?;
                 let trust = Trust::Pinned(membership.fingerprint.clone());
-                Connection::connect(&addr, trust, auth)
+                let conn = Connection::connect(&addr, trust, auth)
                     .await
-                    .map_err(upstream_error)
+                    .map_err(upstream_error)?;
+                crate::handler::check_peer_version(&conn)?;
+                Ok(conn)
             }
         }
     }

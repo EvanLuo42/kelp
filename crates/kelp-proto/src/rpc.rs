@@ -10,7 +10,12 @@ use serde::{Deserialize, Serialize};
 /// A client request.
 ///
 /// New variants are only ever appended, so older peers decode the variants
-/// they know.
+/// they know. Never insert a variant before another or change the fields of
+/// an existing one, here or in any type a request or reply carries: postcard
+/// identifies variants by position and fields by order, so such a change
+/// makes peers misread each other. If a change of shape is unavoidable, bump
+/// [`PROTOCOL_VERSION`](crate::PROTOCOL_VERSION) and
+/// [`MIN_PROTOCOL_VERSION`](crate::MIN_PROTOCOL_VERSION).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
     /// Exchanges a user name and password, and a TOTP code if the user has
@@ -733,6 +738,8 @@ pub enum RaftRpc {
 }
 
 /// A successful reply.
+///
+/// Like [`Request`], only ever extended by appending variants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
     Ok,

@@ -45,6 +45,7 @@ $ kelp totp disable --user alice
 `enable` prints an `otpauth://` URI for an authenticator app and asks for one code to confirm.
 From then on, a password login also asks for a code.
 Turning it off requires a current code, except for an administrator acting on another user.
+To move to a new authenticator app, turn two-factor login off and enable it again; `enable` refuses while it is on.
 
 ## Groups
 

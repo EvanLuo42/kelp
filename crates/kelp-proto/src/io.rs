@@ -6,6 +6,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{Error, Flags, FrameHeader, HEADER_LEN, MAX_PAYLOAD, MsgType, Result};
 
+/// How much of a payload is allocated before any of it has arrived.
+const INITIAL_PAYLOAD: usize = 64 << 10;
+
 /// A frame read from a stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
@@ -119,13 +122,17 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Frame>
         }
     }
     let header = FrameHeader::decode(&buf)?;
-    let mut payload = vec![0u8; header.payload_len as usize];
-    r.read_exact(&mut payload)
-        .await
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::UnexpectedEof => Error::UnexpectedEof,
-            _ => Error::Io(e),
-        })?;
+    let len = header.payload_len as usize;
+    // The buffer grows as bytes arrive, so a header that merely claims a
+    // large payload does not commit memory for it.
+    let mut payload = Vec::with_capacity(len.min(INITIAL_PAYLOAD));
+    (&mut *r)
+        .take(len as u64)
+        .read_to_end(&mut payload)
+        .await?;
+    if payload.len() != len {
+        return Err(Error::UnexpectedEof);
+    }
     Ok(Some(Frame { header, payload }))
 }
 

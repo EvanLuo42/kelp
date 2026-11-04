@@ -21,6 +21,17 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     })
 }
 
+/// Returns the hash of a random password, for checking a password against
+/// when there is no user, so that doing so takes as long as for a user.
+pub fn dummy_hash() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        let mut bytes = [0u8; 32];
+        getrandom::getrandom(&mut bytes).expect("operating system random source");
+        hash_password(&blake3::Hash::from_bytes(bytes).to_hex())
+    })
+}
+
 /// Generates a random access token and the hash under which it is stored.
 pub fn new_token() -> (String, Hash) {
     let mut bytes = [0u8; 32];

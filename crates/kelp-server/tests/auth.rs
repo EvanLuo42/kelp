@@ -197,3 +197,82 @@ async fn logging_out_revokes_the_token() {
     let revoked = connect().await;
     assert!(matches!(revoked, Err(Error::Remote(e)) if e.kind == ErrorKind::Unauthenticated));
 }
+
+#[tokio::test]
+async fn revoking_a_token_ends_the_sessions_using_it() {
+    let server = TestServer::start().await;
+    server.add_user("alice").await;
+    let alice = server.anonymous().await;
+    let Reply::Token { token, .. } = alice.call(&login_as("alice", PASSWORD)).await.unwrap() else {
+        panic!("unexpected reply");
+    };
+    let elsewhere = Connection::connect(
+        server.addr(),
+        Trust::Pinned(server.fingerprint().to_owned()),
+        Auth::Bearer(token),
+    )
+    .await
+    .unwrap();
+    alice.call(&Request::ListStreams).await.unwrap();
+    elsewhere.call(&Request::ListStreams).await.unwrap();
+
+    elsewhere.call(&Request::Logout).await.unwrap();
+    for conn in [&alice, &elsewhere] {
+        let err = conn.call(&Request::ListStreams).await.unwrap_err();
+        assert_eq!(remote_kind(err), ErrorKind::Unauthenticated);
+    }
+
+    // A session that logged in with a password can log out too.
+    let bob = server.add_user("bob").await;
+    bob.call(&Request::Logout).await.unwrap();
+    let err = bob.call(&Request::ListStreams).await.unwrap_err();
+    assert_eq!(remote_kind(err), ErrorKind::Unauthenticated);
+}
+
+#[tokio::test]
+async fn failed_logins_do_not_tell_which_users_exist() {
+    let server = TestServer::start().await;
+    server.add_user("alice").await;
+    server
+        .admin(Request::CreateUser {
+            name: "build".into(),
+            password: None,
+            admin: false,
+            replica: false,
+        })
+        .await;
+    let anon = server.anonymous().await;
+    let mut errors = Vec::new();
+    for (user, password) in [("alice", "wrong"), ("nobody", PASSWORD), ("build", PASSWORD)] {
+        match anon.call(&login_as(user, password)).await {
+            Err(Error::Remote(e)) => errors.push(e),
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+    assert_eq!(errors[0].kind, ErrorKind::Unauthenticated);
+    assert!(errors.iter().all(|e| *e == errors[0]), "{errors:?}");
+}
+
+#[tokio::test]
+async fn a_session_follows_its_user_into_a_merge() {
+    let server = TestServer::start().await;
+    let alice = server.add_user("alice").await;
+    server.add_user("bob").await;
+    server
+        .admin(Request::MergeUser {
+            from: "alice".into(),
+            into: "bob".into(),
+        })
+        .await;
+    alice
+        .call(&Request::EditProfile {
+            user: None,
+            change: kelp_proto::rpc::ProfileChange::DisplayName(Some("Bob B".into())),
+        })
+        .await
+        .unwrap();
+    let Reply::User(bob) = server.admin(Request::GetUser { name: "bob".into() }).await else {
+        panic!("unexpected reply");
+    };
+    assert_eq!(bob.display_name.as_deref(), Some("Bob B"));
+}

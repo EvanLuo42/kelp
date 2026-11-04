@@ -20,8 +20,8 @@ use kelp_meta::db::Reader;
 use kelp_meta::record::User;
 use kelp_proto::io::{expect_frame, write_message};
 use kelp_proto::{
-    Auth, Capabilities, ErrorKind, ErrorReply, Hello, MsgType, PROTOCOL_VERSION, Reply, Request,
-    RequestClass, Welcome,
+    Auth, Capabilities, ErrorKind, ErrorReply, Hello, MIN_PROTOCOL_VERSION, MsgType,
+    PROTOCOL_VERSION, Reply, Request, RequestClass, Welcome,
 };
 use quinn::{RecvStream, SendStream};
 use tracing::Instrument;
@@ -45,15 +45,42 @@ pub(crate) struct Session {
     token: Mutex<Option<String>>,
     /// An edge's connection to the commit server as this client's user.
     upstream: tokio::sync::Mutex<Option<Connection>>,
+    /// Whether the client's [`Hello`] was accepted. Requests before that
+    /// may come from a peer of an incompatible protocol version.
+    greeted: std::sync::atomic::AtomicBool,
 }
 
 impl Session {
-    fn user(&self) -> Result<User, ErrorReply> {
-        self.user
-            .lock()
-            .expect("session lock")
-            .clone()
-            .ok_or_else(|| ErrorReply::new(ErrorKind::Unauthenticated, "log in first"))
+    /// Returns the session's user as `reader` has it now.
+    ///
+    /// The session holds on to the token it logged in with and checks it on
+    /// every request, so revoking the token (by logging out elsewhere,
+    /// linking single sign-on, merging the user away and the like) ends the
+    /// session too, and changes to the user take effect at once.
+    fn current_user(&self, state: &State, reader: &Reader) -> Result<User, ErrorReply> {
+        let token = self.token.lock().expect("session lock").clone();
+        let logged_in = self.user.lock().expect("session lock").is_some();
+        let (Some(token), true) = (token, logged_in) else {
+            return Err(ErrorReply::new(ErrorKind::Unauthenticated, "log in first"));
+        };
+        let ended = |why: &str| {
+            self.set_user(None);
+            ErrorReply::new(
+                ErrorKind::Unauthenticated,
+                format!("{why}; log in again"),
+            )
+        };
+        let record = reader
+            .token(&auth::token_hash(&token))
+            .map_err(internal)?
+            .filter(|t| t.expires_at > state.clock.now())
+            .ok_or_else(|| ended("the session's token was revoked or has expired"))?;
+        let user = reader
+            .user(&record.user)
+            .map_err(internal)?
+            .ok_or_else(|| ended("the session's user no longer exists"))?;
+        self.set_user(Some(user.clone()));
+        Ok(user)
     }
 
     fn set_user(&self, user: Option<User>) {
@@ -207,6 +234,12 @@ async fn serve_stream(
             }
             None
         }
+        MsgType::Request if !session.greeted.load(std::sync::atomic::Ordering::Acquire) => {
+            Some(Err(ErrorReply::new(
+                ErrorKind::Invalid,
+                "a connection starts with a Hello; upgrade the client to the server's Kelp version",
+            )))
+        }
         MsgType::Request => {
             let request: Request = frame.decode()?;
             let (op, class) = (request.name(), request.class());
@@ -282,12 +315,9 @@ async fn hello_reply(
     session: &Session,
     hello: &Hello,
 ) -> Result<Welcome, ErrorReply> {
-    let version = hello.negotiate(1, PROTOCOL_VERSION).ok_or_else(|| {
-        ErrorReply::new(
-            ErrorKind::Invalid,
-            format!("server speaks protocol version {PROTOCOL_VERSION}"),
-        )
-    })?;
+    let version = hello
+        .negotiate(MIN_PROTOCOL_VERSION, PROTOCOL_VERSION)
+        .ok_or_else(|| version_mismatch(hello))?;
     let user = match &hello.auth {
         Auth::None => None,
         Auth::Bearer(token) => {
@@ -321,6 +351,9 @@ async fn hello_reply(
         Auth::None => None,
     });
     let reader = state.reader()?;
+    session
+        .greeted
+        .store(true, std::sync::atomic::Ordering::Release);
     Ok(Welcome {
         version,
         role: state.server_role(),
@@ -328,6 +361,39 @@ async fn hello_reply(
         capabilities: Capabilities::default(),
         user: name,
     })
+}
+
+/// The error refusing a peer that speaks none of this server's protocol
+/// versions. Its shape never changes, so peers of every version read it.
+fn version_mismatch(hello: &Hello) -> ErrorReply {
+    let ours = format!(
+        "this server speaks Kelp protocol versions {MIN_PROTOCOL_VERSION} to {PROTOCOL_VERSION}"
+    );
+    let theirs = format!(
+        "{} speaks {} to {}",
+        hello.client_name, hello.min_version, hello.max_version
+    );
+    let advice = match hello.max_version < MIN_PROTOCOL_VERSION {
+        true => "upgrade the client (or, for a commit group member or edge, that server) to the server's Kelp version",
+        false => "upgrade the server to the client's Kelp version",
+    };
+    ErrorReply::new(ErrorKind::Invalid, format!("{ours} and {theirs}; {advice}"))
+}
+
+/// Refuses a connection to a server that negotiated a protocol version
+/// this build no longer speaks. Clients older than this check offer
+/// version 1, which a version 1 server accepts.
+pub(crate) fn check_peer_version(conn: &Connection) -> Result<(), ErrorReply> {
+    let version = conn.welcome().version;
+    match version >= MIN_PROTOCOL_VERSION {
+        true => Ok(()),
+        false => Err(ErrorReply::new(
+            ErrorKind::Unavailable,
+            format!(
+                "the upstream server speaks Kelp protocol version {version} and this server {MIN_PROTOCOL_VERSION} to {PROTOCOL_VERSION}; upgrade the upstream server to this server's Kelp version"
+            ),
+        )),
+    }
 }
 
 /// Handles `request`, sending it on to the new leader if this member lost
@@ -403,7 +469,11 @@ async fn handle_once(
             _ => unreachable!("matched above"),
         };
     }
-    let user = session.user()?;
+    let access = {
+        let reader = state.reader()?;
+        let user = session.current_user(state, &reader)?;
+        Access::load(&reader, user)?
+    };
     let forwarded = matches!(
         request.class(),
         RequestClass::Write | RequestClass::Upload | RequestClass::Authoritative
@@ -412,9 +482,15 @@ async fn handle_once(
         && forwarded
     {
         let conn = session.upstream(to).await?;
-        return edge::forward(state, to, &conn, request, recv).await;
+        let link = matches!(request, Request::OidcLink { .. });
+        let reply = edge::forward(state, to, &conn, request, recv).await;
+        // Linking revokes the user's tokens and logs the upstream session
+        // in with a new one, which this session needs as well.
+        if let (true, Ok(Reply::Token { token, .. })) = (link, &reply) {
+            session.set_token(Some(token.clone()));
+        }
+        return reply;
     }
-    let access = Access::load(&state.reader()?, user)?;
     dispatch::dispatch(state, session, access, request, send, recv).await
 }
 
@@ -422,7 +498,7 @@ fn parse_path(s: &str) -> Result<DepotPath, ErrorReply> {
     DepotPath::parse(s).map_err(invalid)
 }
 
-fn check_batch(len: usize) -> Result<(), ErrorReply> {
+pub(crate) fn check_batch(len: usize) -> Result<(), ErrorReply> {
     match len {
         0..=MAX_BATCH => Ok(()),
         _ => Err(ErrorReply::new(

@@ -113,6 +113,8 @@ impl Peer {
                 let c = Connection::connect(&self.addr, trust, Auth::None)
                     .await
                     .map_err(|e| CallError::Unreachable(Unreachable::new(&e)))?;
+                crate::handler::check_peer_version(&c)
+                    .map_err(|e| CallError::Unreachable(Unreachable::new(&e)))?;
                 self.conn = Some(c.clone());
                 c
             }

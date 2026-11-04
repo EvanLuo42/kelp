@@ -53,7 +53,10 @@ impl Plugins {
     }
 }
 
-/// Reads the whole content of a file from the chunk store.
+/// Reads the whole content of a file from the chunk store for a plugin.
+///
+/// Content larger than a plugin's memory could never be handed to one, so
+/// it is refused before anything is read.
 pub(crate) async fn read_content(
     state: &State,
     content: &ContentId,
@@ -65,9 +68,25 @@ pub(crate) async fn read_content(
         .ok_or_else(|| {
             ErrorReply::new(ErrorKind::NotFound, format!("content {content} not found"))
         })?;
+    let limit = Limits::default().memory as u64;
+    if manifest.size > limit {
+        return Err(ErrorReply::new(
+            ErrorKind::Invalid,
+            format!(
+                "content {content} has {} bytes, more than the {limit} a plugin can take",
+                manifest.size
+            ),
+        ));
+    }
     let mut data = Vec::with_capacity(manifest.size as usize);
     for chunk in &manifest.chunks {
-        data.extend_from_slice(&state.blobs.get(chunk.id).await.map_err(internal)?);
+        let bytes = state.blobs.get(chunk.id).await.map_err(internal)?;
+        if (data.len() + bytes.len()) as u64 > manifest.size {
+            return Err(internal(format!(
+                "the chunks of content {content} exceed its size"
+            )));
+        }
+        data.extend_from_slice(&bytes);
     }
     Ok(data)
 }

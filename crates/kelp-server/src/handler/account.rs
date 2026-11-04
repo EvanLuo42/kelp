@@ -31,27 +31,25 @@ pub(super) async fn login(
                     None => None,
                 },
             };
-            let wrong =
-                || ErrorReply::new(ErrorKind::Unauthenticated, "wrong user name or password");
-            let user = user.ok_or_else(wrong)?;
-            if user.password_hash.is_none()
-                && reader.sso_link(&user.name).map_err(meta_error)?.is_some()
-            {
-                return Err(ErrorReply::new(
-                    ErrorKind::Unauthenticated,
-                    format!(
-                        "{} logs in with single sign-on; run `kelp login <server> --sso`",
-                        user.name
-                    ),
-                ));
-            }
-            let verified = user
-                .password_hash
-                .as_deref()
-                .is_some_and(|h| auth::verify_password(&password, h));
-            if !verified {
-                return Err(wrong());
-            }
+            // Unknown users, users without a password and wrong passwords
+            // look the same, and take as long, so a login reveals nothing
+            // about which users exist or sign on with SSO.
+            let wrong = || {
+                let message = match state.oidc.is_some() {
+                    true => "wrong user name or password; users of single sign-on run `kelp login <server> --sso`",
+                    false => "wrong user name or password",
+                };
+                ErrorReply::new(ErrorKind::Unauthenticated, message)
+            };
+            let hash = user.as_ref().and_then(|u| u.password_hash.clone());
+            let verified = match hash.as_deref() {
+                Some(hash) => auth::verify_password(&password, hash),
+                None => auth::verify_password(&password, auth::dummy_hash()),
+            };
+            let user = match (user, hash.is_some() && verified) {
+                (Some(user), true) => user,
+                _ => return Err(wrong()),
+            };
             if reader.is_disabled(&user.name).map_err(meta_error)? {
                 return Err(super::disabled(&user.name));
             }
@@ -100,6 +98,8 @@ async fn start_session(state: &State, session: &Session, user: User) -> Response
         state.token_ttl.as_millis() as u64,
     )
     .await?;
+    // The session ends when this token is revoked.
+    session.set_token(Some(token.clone()));
     let reply = Reply::Token {
         token,
         user: user.name.clone(),
@@ -170,7 +170,10 @@ async fn sso_user(
         let linked = reader
             .sso_user(&identity.issuer, &identity.subject)
             .map_err(meta_error)?;
-        let expected = reader.expected_sso(&identity.user).map_err(meta_error)?;
+        let expected = match &identity.expect_name {
+            Some(name) => reader.expected_sso(name).map_err(meta_error)?,
+            None => None,
+        };
         let taken = reader.user(&identity.user).map_err(meta_error)?.is_some()
             || reader.alias(&identity.user).map_err(meta_error)?.is_some();
         (linked, expected, taken)
@@ -262,6 +265,16 @@ async fn sync_groups(
         state.commit_all("oidc", changes).await?;
     }
     Ok(())
+}
+
+/// Returns the stored record of `name`, as of now rather than as the
+/// session last saw it.
+fn load_record(state: &State, name: &str) -> Result<User, ErrorReply> {
+    state
+        .reader()?
+        .user(name)
+        .map_err(meta_error)?
+        .ok_or_else(|| not_found(format!("user {name}")))
 }
 
 fn load_user(state: &State, name: &str) -> Result<User, ErrorReply> {
@@ -481,6 +494,9 @@ pub(super) async fn totp_enroll(access: &Access) -> Response {
             "only users who log in with a password can add a second factor",
         ));
     }
+    if access.user.totp.is_some() {
+        return Err(totp_already_on());
+    }
     let secret = auth::new_totp_secret();
     let uri = format!(
         "otpauth://totp/Kelp:{}?secret={secret}&issuer=Kelp&digits=6&period=30",
@@ -495,6 +511,12 @@ pub(super) async fn totp_confirm(
     secret: String,
     code: String,
 ) -> Response {
+    let current = load_record(state, access.name())?;
+    if current.totp.is_some() {
+        // Replacing the secret would let whoever holds the session drop
+        // the second factor without knowing a code for it.
+        return Err(totp_already_on());
+    }
     if auth::check_totp(&secret, &code, state.clock.now()).is_none() {
         return Err(ErrorReply::new(
             ErrorKind::Invalid,
@@ -509,6 +531,13 @@ pub(super) async fn totp_confirm(
     Ok(Reply::Ok)
 }
 
+fn totp_already_on() -> ErrorReply {
+    ErrorReply::new(
+        ErrorKind::Conflict,
+        "two-factor login is already on; turn it off with a code from the authenticator app first",
+    )
+}
+
 pub(super) async fn totp_disable(
     state: &State,
     access: &Access,
@@ -518,7 +547,7 @@ pub(super) async fn totp_disable(
     let name = user.unwrap_or_else(|| access.name().to_owned());
     if !name.eq_ignore_ascii_case(access.name()) || code.is_none() {
         access.require_admin()?;
-    } else if let (Some(secret), Some(code)) = (&access.user.totp, &code) {
+    } else if let (Some(secret), Some(code)) = (&load_record(state, &name)?.totp, &code) {
         check_code(state, &name, secret, code)?;
     }
     let cmd = Command::SetTotp { name, secret: None };

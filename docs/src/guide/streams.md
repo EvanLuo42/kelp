@@ -20,7 +20,8 @@ $ kelp streams
 
 Creating a stream takes constant time; the new stream starts as a reference to its parent's current tree.
 Creating development and release streams requires an administrator.
-Anyone who can see the parent can create a task stream.
+Anyone who can read every file of the parent can create a task stream of it.
+A task stream starts as a copy of the parent under its own path, where protections written for the parent's paths do not apply, so a user that some files of the parent are hidden from has to ask an administrator.
 
 ## Merging down
 
