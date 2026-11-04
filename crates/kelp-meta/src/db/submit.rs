@@ -40,6 +40,12 @@ pub(super) fn apply_submit(
             Some(integration) => check_merged(txn, &stream, integration)?,
             None => return Err(Error::Invalid("changelist has no files".into())),
         }
+    } else if let Some(integration) = &submission.integration
+        && origin == Origin::Local
+    {
+        // Only where the submit is proposed: replicas apply what the commit
+        // server accepted, including merges logged before this check existed.
+        check_complete(txn, &stream, integration, changes)?;
     }
     let holder = LockHolder {
         user: submission.author.clone(),
@@ -388,15 +394,71 @@ fn check_merged(
             "only a merge-down can be submitted without files".into(),
         ));
     }
+    let missing = missing_changes(txn, target, integration, &[])?;
+    match missing.is_empty() {
+        true => Ok(()),
+        false => Err(Error::Conflict(missing)),
+    }
+}
+
+/// Checks that an integration that changes files leaves `target` with every
+/// change of its source since the last integration from it: each file the
+/// source changed is either among `changes`, as the resolved result, or
+/// already the same in `target` as in the source.
+///
+/// A resolved file may differ from both sides, so its content is trusted;
+/// what this rules out is a merge that records the new merge point while
+/// silently leaving changes behind, for example because the workspace's view
+/// did not cover them.
+pub(super) fn check_complete(
+    txn: &WriteTransaction,
+    target: &Stream,
+    integration: &crate::Integration,
+    changes: &[FileChange],
+) -> Result<()> {
+    let missing = missing_changes(txn, target, integration, changes)?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut lines = missing;
+    lines.push(format!(
+        "merge again in a workspace whose view covers these files, or resolve them, \
+         before recording {}@{}",
+        integration.source, integration.through
+    ));
+    Err(Error::Conflict(lines))
+}
+
+/// Returns a description of each change `integration.source` made since the
+/// last integration into `target` that `target` lacks and `changes` does not
+/// resolve.
+fn missing_changes(
+    txn: &WriteTransaction,
+    target: &Stream,
+    integration: &crate::Integration,
+    changes: &[FileChange],
+) -> Result<Vec<String>> {
+    let source = load_stream(txn, &integration.source)?;
     let base = match integration_of(txn, &target.path, &integration.source)? {
-        ClNumber(0) => target.base_root,
+        // A child starts with its parent's tree, and a parent first meets a
+        // child's changes on top of the tree the child started with.
+        ClNumber(0) if target.parent.as_ref() == Some(&source.path) => target.base_root,
+        ClNumber(0) => source.base_root,
         merged => super::imports::root_at(txn, &integration.source, merged)?,
     };
     let through = super::imports::root_at(txn, &integration.source, integration.through)?;
+    let resolved: std::collections::BTreeSet<String> = changes
+        .iter()
+        .filter_map(|c| stream_relative(&target.path, &c.path))
+        .map(|rel| fold(&rel))
+        .collect();
     let nodes = TxnNodes::new(txn)?;
     let dirs = Dirs::new(&nodes);
     let mut missing = Vec::new();
     for diff in dirs.diff_paths(Some(base), through)? {
+        if resolved.contains(&fold(&diff.path)) {
+            continue;
+        }
         let have = dirs.lookup(target.root, &diff.path)?.map(|e| e.kind);
         if have != diff.new {
             missing.push(format!(
@@ -405,10 +467,7 @@ fn check_merged(
             ));
         }
     }
-    match missing.is_empty() {
-        true => Ok(()),
-        false => Err(Error::Conflict(missing)),
-    }
+    Ok(missing)
 }
 
 fn integration_of(
