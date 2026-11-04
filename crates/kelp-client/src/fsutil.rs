@@ -58,7 +58,11 @@ pub(crate) fn entry_matches(
 /// observed would leave the time unchanged, as git's "racy" entries do.
 /// A time of 0, which `have` uses for "unknown" and a file may have when its
 /// time cannot be read, never matches.
-pub(crate) fn mtime_trusted(have: &HaveEntry, entry: crate::index::DiskEntry, recorded: u64) -> bool {
+pub(crate) fn mtime_trusted(
+    have: &HaveEntry,
+    entry: crate::index::DiskEntry,
+    recorded: u64,
+) -> bool {
     have.mtime != 0 && entry.mtime == have.mtime && have.mtime < recorded
 }
 

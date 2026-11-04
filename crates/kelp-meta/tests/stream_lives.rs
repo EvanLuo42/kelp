@@ -3,9 +3,7 @@
 
 use kelp_core::{ClNumber, ContentId, FileManifest};
 use kelp_meta::record::Import;
-use kelp_meta::{
-    Command, Dirs, FileAction, FileChange, FileData, MetaDb, StreamKind, Submission,
-};
+use kelp_meta::{Command, Dirs, FileAction, FileChange, FileData, MetaDb, StreamKind, Submission};
 use kelp_testkit::{Sandbox, depot_path as p};
 use redb::TableDefinition;
 
@@ -121,8 +119,10 @@ fn history(db: &MetaDb) {
         }],
     );
     set_imports(db, Vec::new());
-    db.commit(Command::DeleteStream { path: p("//game/t") })
-        .unwrap();
+    db.commit(Command::DeleteStream {
+        path: p("//game/t"),
+    })
+    .unwrap();
     assert_eq!(owner(db, "//game/t"), None);
     add(db, "//game/main", "//game/main/x.txt", b"x");
     create(db, "dave", "//game/t", Some("//game/main"));
@@ -170,9 +170,7 @@ fn opening_a_format_9_database_drops_leftover_views_and_finds_owners() {
             let mut imports = txn.open_table(VIEW_IMPORTS).unwrap();
             let none = postcard::to_allocvec(&Vec::<Import>::new()).unwrap();
             for (stream, cl) in [("game/t", 2), ("game/t", 3), ("game/gone", 3)] {
-                views
-                    .insert((stream, cl), lib_root.0.0.as_slice())
-                    .unwrap();
+                views.insert((stream, cl), lib_root.0.0.as_slice()).unwrap();
                 imports.insert((stream, cl), none.as_slice()).unwrap();
             }
             txn.open_table(META)

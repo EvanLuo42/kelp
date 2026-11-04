@@ -48,10 +48,7 @@ pub(super) fn publish(
         return Err(Error::Invalid("an artifact needs at least one file".into()));
     }
     super::apply::validate_name("artifact", &contents.name)?;
-    let stream: crate::record::Stream = match txn
-        .open_table(STREAMS)?
-        .get(contents.stream.key())?
-    {
+    let stream: crate::record::Stream = match txn.open_table(STREAMS)?.get(contents.stream.key())? {
         Some(v) => dec("streams", v.value())?,
         None => return Err(Error::NotFound(format!("stream {}", contents.stream))),
     };

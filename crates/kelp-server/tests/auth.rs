@@ -243,7 +243,11 @@ async fn failed_logins_do_not_tell_which_users_exist() {
         .await;
     let anon = server.anonymous().await;
     let mut errors = Vec::new();
-    for (user, password) in [("alice", "wrong"), ("nobody", PASSWORD), ("build", PASSWORD)] {
+    for (user, password) in [
+        ("alice", "wrong"),
+        ("nobody", PASSWORD),
+        ("build", PASSWORD),
+    ] {
         match anon.call(&login_as(user, password)).await {
             Err(Error::Remote(e)) => errors.push(e),
             other => panic!("expected an error, got {other:?}"),

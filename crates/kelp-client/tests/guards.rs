@@ -116,7 +116,12 @@ fn a_time_recorded_in_the_tick_of_the_save_is_not_trusted() {
     sandbox.write("ws/a.txt", "v3\n");
     set_mtime(&file, tick);
     assert!(
-        Workspace::open(&root).unwrap().status().unwrap().modified.is_empty(),
+        Workspace::open(&root)
+            .unwrap()
+            .status()
+            .unwrap()
+            .modified
+            .is_empty(),
         "a trusted time is not hashed again"
     );
 }
@@ -175,11 +180,16 @@ fn refreshing_the_index_skips_artifact_directories() {
     sandbox.write("ws/Tools/tool.exe", "built\n");
     sandbox.write("ws/notes.txt", "mine\n");
     // A watcher reports paths below the canonical root.
-    index.refresh(&ws, &ws.root().join("Tools/tool.exe")).unwrap();
+    index
+        .refresh(&ws, &ws.root().join("Tools/tool.exe"))
+        .unwrap();
     index.refresh(&ws, &ws.root().join("notes.txt")).unwrap();
     let listed: Vec<&str> = index.entries().map(|(l, _)| l).collect();
     assert_eq!(listed, ["notes.txt"]);
-    assert_eq!(ws.status_indexed(&index).unwrap().added, [path("notes.txt")]);
+    assert_eq!(
+        ws.status_indexed(&index).unwrap().added,
+        [path("notes.txt")]
+    );
 }
 
 #[tokio::test]

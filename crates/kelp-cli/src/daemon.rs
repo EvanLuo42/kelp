@@ -132,7 +132,10 @@ async fn connect_with_pid(home: &Home) -> std::io::Result<(tokio::net::UnixStrea
 #[cfg(windows)]
 async fn connect_with_pid(
     home: &Home,
-) -> std::io::Result<(tokio::net::windows::named_pipe::NamedPipeClient, Option<u32>)> {
+) -> std::io::Result<(
+    tokio::net::windows::named_pipe::NamedPipeClient,
+    Option<u32>,
+)> {
     use std::os::windows::io::AsRawHandle;
     #[link(name = "kernel32")]
     unsafe extern "system" {

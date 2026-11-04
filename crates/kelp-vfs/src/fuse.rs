@@ -270,8 +270,8 @@ impl Fuse {
     }
 
     fn upper_attr(&self, ino: u64, meta: &std::fs::Metadata) -> FileAttr {
-        let mtime = UNIX_EPOCH
-            + Duration::new(meta.mtime().max(0) as u64, meta.mtime_nsec().max(0) as u32);
+        let mtime =
+            UNIX_EPOCH + Duration::new(meta.mtime().max(0) as u64, meta.mtime_nsec().max(0) as u32);
         FileAttr {
             ino,
             size: meta.len(),
@@ -503,7 +503,10 @@ impl Filesystem for Fuse {
     }
 
     fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
-        match self.path(ino).and_then(|p| self.open_handle(ino, &p, flags)) {
+        match self
+            .path(ino)
+            .and_then(|p| self.open_handle(ino, &p, flags))
+        {
             Ok(fh) => reply.opened(fh, 0),
             Err(e) => reply.error(e),
         }

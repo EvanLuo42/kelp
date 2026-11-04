@@ -369,7 +369,6 @@ fn names_that_only_now_fold_alike_are_both_kept() {
     let raw = DepotPath::parse("//game/main/ασ.txt").unwrap();
     revisions += r.revisions(&raw).unwrap().len();
     assert_eq!(revisions, 1);
-    drop(dirs);
     drop((nodes, r, db));
     let raw = redb::Database::create(&path).unwrap();
     let txn = raw.begin_read().unwrap();

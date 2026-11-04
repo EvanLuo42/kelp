@@ -117,9 +117,14 @@ fn judge_large_file(limits: Limits, declared: u64) -> kelp_plugin::Result<Verdic
     // The marker comes first, so that finding it costs the plugin little.
     let mut content = b"DO NOT SUBMIT".to_vec();
     content.resize(1 << 20, b'x');
-    trigger.pre_submit(&host, "//game/main", "alice", "fix #1", &changes, move |_| {
-        Some(content.clone())
-    })
+    trigger.pre_submit(
+        &host,
+        "//game/main",
+        "alice",
+        "fix #1",
+        &changes,
+        move |_| Some(content.clone()),
+    )
 }
 
 #[test]

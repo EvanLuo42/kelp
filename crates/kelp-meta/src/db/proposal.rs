@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::apply::{self, Origin};
 use super::artifacts::NEXT_ARTIFACT;
 use super::{
-    Applied, CONSENSUS, MANIFESTS, META, MetaDb, Reader, SHELVES, append_log, enc, next_cl,
-    submit,
+    Applied, CONSENSUS, MANIFESTS, META, MetaDb, Reader, SHELVES, append_log, enc, next_cl, submit,
 };
 use crate::{ArtifactContents, Command, LogIndex, Result, ShelfContents, Submission, Timestamp};
 

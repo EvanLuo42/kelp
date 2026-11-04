@@ -183,7 +183,6 @@ fn an_obliterate_between_marking_and_sweeping_keeps_the_trees_it_wrote() {
     let first = r.changelist(ClNumber(1)).unwrap().unwrap();
     assert!(dirs.lookup(first.root, "Docs/b.txt").unwrap().is_some());
     assert!(dirs.lookup(first.root, "Docs/a.txt").unwrap().is_none());
-    drop(dirs);
     drop((nodes, r));
 
     // Once a changelist follows the obliterate, sweeping trusts its marking

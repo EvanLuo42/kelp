@@ -126,10 +126,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Frame>
     // The buffer grows as bytes arrive, so a header that merely claims a
     // large payload does not commit memory for it.
     let mut payload = Vec::with_capacity(len.min(INITIAL_PAYLOAD));
-    (&mut *r)
-        .take(len as u64)
-        .read_to_end(&mut payload)
-        .await?;
+    (&mut *r).take(len as u64).read_to_end(&mut payload).await?;
     if payload.len() != len {
         return Err(Error::UnexpectedEof);
     }

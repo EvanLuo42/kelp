@@ -145,7 +145,8 @@ impl Workspace {
             let abs = self.abs(&local);
             let entry = self.state.have.get(&path);
             match entry {
-                Some(h) if abs.exists() && !file_matches(&abs, h, self.recorded())? => match target {
+                Some(h) if abs.exists() && !file_matches(&abs, h, self.recorded())? => match target
+                {
                     // An interrupted sync may have written it already.
                     Some(t) if content_of(&abs).is_ok_and(|c| c == t.content) => {
                         self.record_have(&path, version(t))?;

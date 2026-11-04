@@ -105,7 +105,8 @@ pub(super) async fn delete_stream(state: &State, access: &Access, stream: String
     let owner = reader.stream_owner(&path).map_err(meta_error)?;
     drop(reader);
     let owns = record.kind == StreamKind::Task
-        && owner.is_some_and(|o| kelp_meta::db::name_key(&o) == kelp_meta::db::name_key(access.name()));
+        && owner
+            .is_some_and(|o| kelp_meta::db::name_key(&o) == kelp_meta::db::name_key(access.name()));
     if !owns && !access.is_admin() {
         return Err(ErrorReply::new(
             ErrorKind::Forbidden,
@@ -165,7 +166,11 @@ pub(super) async fn create_stream(
 /// A task stream starts with a copy of its parent's tree under its own
 /// path, where protections written for the parent's paths no longer apply,
 /// so making one must not hand a user files of the parent they cannot read.
-fn require_whole_tree(state: &State, access: &Access, stream: &DepotPath) -> Result<(), ErrorReply> {
+fn require_whole_tree(
+    state: &State,
+    access: &Access,
+    stream: &DepotPath,
+) -> Result<(), ErrorReply> {
     let reader = state.reader()?;
     let record = reader.stream(stream).map_err(meta_error)?;
     let record = record.ok_or_else(|| not_found(format!("stream {stream}")))?;

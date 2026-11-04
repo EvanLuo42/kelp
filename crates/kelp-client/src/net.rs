@@ -7,7 +7,8 @@ use kelp_core::{ChunkId, Hash, TreeId};
 use kelp_proto::io::{expect_frame, split_chunk, write_chunk, write_message};
 use kelp_proto::rpc::{FileDelta, FileInfo, StreamInfo};
 use kelp_proto::{
-    Auth, Capabilities, ErrorReply, Hello, MIN_PROTOCOL_VERSION, MsgType, PROTOCOL_VERSION, Reply, Request, Welcome,
+    Auth, Capabilities, ErrorReply, Hello, MIN_PROTOCOL_VERSION, MsgType, PROTOCOL_VERSION, Reply,
+    Request, Welcome,
 };
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;

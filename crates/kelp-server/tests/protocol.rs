@@ -105,8 +105,8 @@ fn hello(min_version: u16, max_version: u16) -> Hello {
 
 #[test]
 fn profiles_changed_the_wire_format() {
-    assert!(MIN_PROTOCOL_VERSION >= 2);
-    assert!(PROTOCOL_VERSION >= MIN_PROTOCOL_VERSION);
+    const { assert!(MIN_PROTOCOL_VERSION >= 2) };
+    const { assert!(PROTOCOL_VERSION >= MIN_PROTOCOL_VERSION) };
 }
 
 #[tokio::test]
@@ -138,7 +138,12 @@ async fn clients_offering_older_versions_get_the_newest() {
     let welcome: kelp_proto::Welcome = frame.decode().unwrap();
     assert_eq!(welcome.version, PROTOCOL_VERSION);
 
-    let frame = exchange(&conn, MsgType::Hello, &hello(PROTOCOL_VERSION + 1, u16::MAX)).await;
+    let frame = exchange(
+        &conn,
+        MsgType::Hello,
+        &hello(PROTOCOL_VERSION + 1, u16::MAX),
+    )
+    .await;
     let error: ErrorReply = frame.decode().unwrap();
     assert!(error.message.contains("upgrade the server"), "{error}");
 }

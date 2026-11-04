@@ -294,7 +294,10 @@ mod tests {
 
     #[test]
     fn a_password_on_stdin_is_one_line() {
-        assert_eq!(read_line_password(&b"s3cret\r\nmore"[..]).unwrap(), "s3cret");
+        assert_eq!(
+            read_line_password(&b"s3cret\r\nmore"[..]).unwrap(),
+            "s3cret"
+        );
         assert_eq!(read_line_password(&b"s3cret"[..]).unwrap(), "s3cret");
         assert_eq!(read_line_password(&b"\n"[..]).unwrap(), "");
     }

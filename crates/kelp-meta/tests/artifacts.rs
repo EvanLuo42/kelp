@@ -32,7 +32,10 @@ fn artifacts_of_changelists_the_stream_does_not_have_are_refused() {
     let f = MetaFixture::new();
     submits(&f, 2);
     let published = f.db().publish_artifact(contents(&f, 3, "win64", b"x"));
-    assert!(matches!(published, Err(Error::NotFound(_))), "{published:?}");
+    assert!(
+        matches!(published, Err(Error::NotFound(_))),
+        "{published:?}"
+    );
     f.db()
         .publish_artifact(contents(&f, 2, "win64", b"x"))
         .unwrap();

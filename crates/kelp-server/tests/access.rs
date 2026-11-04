@@ -24,14 +24,24 @@ async fn secret_depot() -> (TestServer, Connection, Connection) {
     client.sandbox().write("ws/Secret/plan.txt", "plan");
     client.sandbox().write("ws/Art/tree.txt", "tree");
     ws.reconcile(&alice).await.unwrap();
-    ws.submit(&alice, &client.cache(), LocalClId::DEFAULT, Some("all".into()))
-        .await
-        .unwrap();
+    ws.submit(
+        &alice,
+        &client.cache(),
+        LocalClId::DEFAULT,
+        Some("all".into()),
+    )
+    .await
+    .unwrap();
     client.sandbox().write("ws/Art/tree.txt", "a taller tree");
     ws.reconcile(&alice).await.unwrap();
-    ws.submit(&alice, &client.cache(), LocalClId::DEFAULT, Some("edit".into()))
-        .await
-        .unwrap();
+    ws.submit(
+        &alice,
+        &client.cache(),
+        LocalClId::DEFAULT,
+        Some("edit".into()),
+    )
+    .await
+    .unwrap();
     (server, alice, bob)
 }
 
@@ -60,8 +70,10 @@ async fn trees_of_other_streams_cannot_be_diffed() {
 
     // Within its own stream, a tree is filtered by that stream's rules.
     for from in [None, Some(first.root), Some(head.root)] {
-        let Reply::TreeDiff { changes, lookups } =
-            bob.call(&diff("//game/main", from, head.root)).await.unwrap()
+        let Reply::TreeDiff { changes, lookups } = bob
+            .call(&diff("//game/main", from, head.root))
+            .await
+            .unwrap()
         else {
             panic!("unexpected reply");
         };

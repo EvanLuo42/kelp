@@ -5,8 +5,7 @@ use redb::{ReadableTable, WriteTransaction};
 use super::{
     ALIASES, AUDIT, DISABLED, EMAIL_OWNERS, GROUPS, LOCKS, LOG, PROFILES, PROTECTIONS,
     REVIEW_RULES, REVIEWS, Reader, SETTINGS, SHELVES, SSO_EXPECTED, SSO_LINKS, SSO_SUBJECTS,
-    STREAM_OWNERS,
-    TOKENS, USERS, dec, enc, load_user, name_key, save_user,
+    STREAM_OWNERS, TOKENS, USERS, dec, enc, load_user, name_key, save_user,
 };
 use crate::lock::Lock;
 use crate::record::{AuditEntry, Group, Profile, Review, Shelf, Token, User};

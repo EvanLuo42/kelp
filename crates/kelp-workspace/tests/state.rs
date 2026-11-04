@@ -43,7 +43,11 @@ fn ignore_rules() {
     let root = sandbox.dir("ws");
     assert!(Ignore::load(&root).unwrap().is_ignored(".kelp/state.bin"));
     assert!(Ignore::load(&root).unwrap().is_ignored(".KELP/state.bin"));
-    assert!(Ignore::load(&root).unwrap().is_ignored("Mod/.Kelp/config.toml"));
+    assert!(
+        Ignore::load(&root)
+            .unwrap()
+            .is_ignored("Mod/.Kelp/config.toml")
+    );
     assert!(!Ignore::load(&root).unwrap().is_ignored("Mod/.kelpignore"));
 
     sandbox.write(

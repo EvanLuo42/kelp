@@ -65,10 +65,7 @@ impl Session {
         };
         let ended = |why: &str| {
             self.set_user(None);
-            ErrorReply::new(
-                ErrorKind::Unauthenticated,
-                format!("{why}; log in again"),
-            )
+            ErrorReply::new(ErrorKind::Unauthenticated, format!("{why}; log in again"))
         };
         let record = reader
             .token(&auth::token_hash(&token))
@@ -374,7 +371,9 @@ fn version_mismatch(hello: &Hello) -> ErrorReply {
         hello.client_name, hello.min_version, hello.max_version
     );
     let advice = match hello.max_version < MIN_PROTOCOL_VERSION {
-        true => "upgrade the client (or, for a commit group member or edge, that server) to the server's Kelp version",
+        true => {
+            "upgrade the client (or, for a commit group member or edge, that server) to the server's Kelp version"
+        }
         false => "upgrade the server to the client's Kelp version",
     };
     ErrorReply::new(ErrorKind::Invalid, format!("{ours} and {theirs}; {advice}"))
