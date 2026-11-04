@@ -123,6 +123,33 @@ fn projecting_never_discards_local_changes() {
 }
 
 #[test]
+fn projecting_leaves_files_open_for_writing_alone() {
+    let sandbox = Sandbox::new();
+    let (lower, mut hydrator) = common::sample();
+    let v2 = common::lower_file(&mut hydrator, b"alpha v2");
+    let overlay = Overlay::new(sandbox.dir("upper"), lower, Arc::new(hydrator)).unwrap();
+
+    // Opened for writing but not written yet: still clean, but a write
+    // may come at any moment.
+    let path = overlay.open_writer("a.txt").unwrap();
+    assert!(!overlay.project("a.txt", Some(v2)).unwrap(), "left alone");
+    assert!(path.exists());
+    overlay.close_writer("a.txt");
+    assert!(
+        overlay.project("a.txt", Some(v2)).unwrap(),
+        "replaced once closed unwritten"
+    );
+
+    // Two writers: the file stays protected until both are closed.
+    overlay.open_writer("Content/Hero.png").unwrap();
+    overlay.open_writer("Content/Hero.png").unwrap();
+    overlay.close_writer("Content/Hero.png");
+    assert!(!overlay.project("Content/Hero.png", Some(v2)).unwrap());
+    overlay.close_writer("Content/Hero.png");
+    assert!(overlay.project("Content/Hero.png", Some(v2)).unwrap());
+}
+
+#[test]
 fn names_kelp_keeps_state_under_are_reserved() {
     let sandbox = Sandbox::new();
     let (lower, hydrator) = common::sample();
