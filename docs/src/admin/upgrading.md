@@ -10,6 +10,14 @@ On start, a newer server migrates an older format in a single transaction, so a 
 An older server refuses a directory that a newer version has written, with an error that ends in `upgrade Kelp`.
 There is no downgrade: once a newer server has started on a data directory, only a backup brings the old version back.
 
+### Metadata format 10
+
+Format 10 compares names by folding them one letter at a time, as NTFS and APFS do, so `ΟΔΟΣ`, `οδος` and `οδοσ` (and other letter variants such as `µ` and `μ`) are one file.
+Earlier formats gave a word-final sigma a key of its own.
+The migration re-keys the file trees and the tables keyed by paths; it rewrites tree nodes only if some name is affected, so on most servers it only reads them once.
+If two existing names only now fold alike, both are kept: the one already spelled the new way, or else the first, takes the new key, and the server logs a warning naming the other, which keeps its old key and should be renamed.
+The migration also drops the views that deleted streams left behind, and records from the command log who created each stream; streams whose creation the log does not show have no recorded owner.
+
 Clients and servers agree on a wire protocol version when they connect, so clients do not have to be upgraded at the same time as the server.
 The [changelog](https://github.com/EvanLuo42/kelp/blob/main/CHANGELOG.md) notes anything a release asks of clients.
 
