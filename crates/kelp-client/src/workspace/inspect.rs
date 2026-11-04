@@ -77,7 +77,7 @@ impl Workspace {
                 .zip(self.state.pending.owner(path));
             let modified = opened.is_none()
                 && match have {
-                    Some(h) => !file_matches(&abs, h)?,
+                    Some(h) => !file_matches(&abs, h, self.recorded())?,
                     None => exists,
                 };
             let locked_by = locks.get(&kelp_core::path::fold(rel)).cloned();

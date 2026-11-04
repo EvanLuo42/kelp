@@ -354,6 +354,20 @@ impl State {
         }
     }
 
+    /// Returns when the state of the workspace rooted at `root` was last
+    /// saved, in nanoseconds since the Unix epoch, or `None` if it never was.
+    ///
+    /// This is the modification time of the state file, so it comes from the
+    /// same clock, at the same granularity, as the times of the files in the
+    /// workspace.
+    pub fn saved_at(root: &Path) -> Option<u64> {
+        let modified = fs::metadata(meta_path(root, STATE_FILE))
+            .and_then(|m| m.modified())
+            .ok()?;
+        let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some(since.as_nanos() as u64)
+    }
+
     /// Writes the state of the workspace rooted at `root`.
     ///
     /// # Errors

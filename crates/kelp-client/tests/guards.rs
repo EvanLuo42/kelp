@@ -1,11 +1,14 @@
 //! Regression tests for workspace files that Kelp must not misjudge or
 //! overwrite.
 
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use kelp_client::{Connection, DiskIndex, SkipReason, Workspace};
-use kelp_core::{DepotPath, LocalClId};
-use kelp_testkit::depot_path;
+use kelp_core::{ContentId, DepotPath, LocalClId};
 use kelp_testkit::net::{TestClient, TestServer};
-use kelp_workspace::Config;
+use kelp_testkit::{Sandbox, depot_path};
+use kelp_workspace::{Config, HaveEntry, State};
 
 struct Setup {
     server: TestServer,
@@ -49,9 +52,86 @@ async fn setup(files: &[(&str, &str)]) -> Setup {
     }
 }
 
+fn set_mtime(path: &Path, at: SystemTime) {
+    let file = std::fs::File::options().write(true).open(path).unwrap();
+    file.set_modified(at).unwrap();
+}
+
+fn nanos(at: SystemTime) -> u64 {
+    at.duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
+}
+
+/// A workspace without a server that has `a.txt` with `v1\n`, recorded with
+/// the modification time `mtime`, and holds `disk` in it, modified at
+/// `disk_mtime`. The state is saved at `saved`.
+fn offline(
+    sandbox: &Sandbox,
+    mtime: u64,
+    disk: &str,
+    disk_mtime: SystemTime,
+    saved: SystemTime,
+) -> PathBuf {
+    let root = sandbox.dir("ws");
+    Workspace::create(&root, Config::new("ws", "localhost:7474", &stream())).unwrap();
+    let mut state = State::load(&root).unwrap();
+    state.have.insert(
+        path("a.txt"),
+        HaveEntry {
+            local: "a.txt".into(),
+            content: ContentId::of(b"v1\n"),
+            size: 3,
+            executable: false,
+            mtime,
+        },
+    );
+    state.save(&root).unwrap();
+    set_mtime(&root.join(".kelp/state.bin"), saved);
+    let file = sandbox.write("ws/a.txt", disk);
+    set_mtime(&file, disk_mtime);
+    root
+}
+
+#[test]
+fn a_time_recorded_in_the_tick_of_the_save_is_not_trusted() {
+    // Not whole seconds, and long enough ago that no wall clock rule fires.
+    let tick = SystemTime::now() - Duration::from_secs(60) + Duration::from_nanos(123_400);
+    let sandbox = Sandbox::new();
+    // The file changed in the same tick in which its time was recorded and
+    // saved, so the time cannot tell.
+    let root = offline(&sandbox, nanos(tick), "v2\n", tick, tick);
+    let mut ws = Workspace::open(&root).unwrap();
+    assert_eq!(ws.status().unwrap().modified, [path("a.txt")]);
+
+    // Once hashing finds it unchanged and the state is saved later, the time
+    // is trusted.
+    let file = sandbox.write("ws/a.txt", "v1\n");
+    set_mtime(&file, tick);
+    assert!(!ws.refresh_status(None).unwrap().has_unopened_changes());
+    let saved = State::saved_at(&root).unwrap();
+    assert!(saved > nanos(tick));
+    assert_eq!(
+        State::load(&root).unwrap().have[&path("a.txt")].mtime,
+        nanos(tick)
+    );
+    sandbox.write("ws/a.txt", "v3\n");
+    set_mtime(&file, tick);
+    assert!(
+        Workspace::open(&root).unwrap().status().unwrap().modified.is_empty(),
+        "a trusted time is not hashed again"
+    );
+}
+
+#[test]
+fn an_unknown_time_never_matches_an_unreadable_one() {
+    let sandbox = Sandbox::new();
+    let root = offline(&sandbox, 0, "v2\n", UNIX_EPOCH, SystemTime::now());
+    let ws = Workspace::open(&root).unwrap();
+    assert_eq!(ws.status().unwrap().modified, [path("a.txt")]);
+}
+
 #[test]
 fn refreshing_the_index_skips_artifact_directories() {
-    let sandbox = kelp_testkit::Sandbox::new();
+    let sandbox = Sandbox::new();
     let mut config = Config::new("ws", "localhost:7474", &stream());
     config.artifacts.push(kelp_workspace::ArtifactMount {
         name: "tools".into(),
