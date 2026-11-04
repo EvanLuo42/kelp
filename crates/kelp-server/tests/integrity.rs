@@ -76,6 +76,76 @@ async fn content_put_to_use_while_collecting_is_kept() {
 }
 
 #[tokio::test]
+async fn a_submit_while_collecting_keeps_the_chunks_it_refers_to() {
+    let (server, pause) = paused_server().await;
+    let conn = server.add_user("alice").await;
+    // A file of two chunks, uploaded with its manifest long ago and never
+    // submitted, so that nothing leases it any more.
+    let (a, b) = (pseudo_random(30_000, 4), pseudo_random(20_000, 5));
+    let (id_a, id_b) = (ChunkId::of(&a), ChunkId::of(&b));
+    let content = ContentId::of(&[a.as_slice(), b.as_slice()].concat());
+    conn.put_chunks(vec![
+        (id_a, Bytes::from(a.clone())),
+        (id_b, Bytes::from(b.clone())),
+    ])
+    .await
+    .unwrap();
+    conn.call(&Request::PutManifests {
+        manifests: vec![FileManifest {
+            content,
+            size: 50_000,
+            chunks: vec![
+                ChunkRef {
+                    id: id_a,
+                    len: 30_000,
+                },
+                ChunkRef {
+                    id: id_b,
+                    len: 20_000,
+                },
+            ],
+        }],
+    })
+    .await
+    .unwrap();
+    server.clock().advance(2 * HOUR);
+
+    let admin = server.login(ADMIN).await;
+    let gc = tokio::spawn(async move { admin.call(&Request::Gc { dry_run: false }).await });
+    pause.marked.notified().await;
+
+    // The client knows the content is stored, so it only submits.
+    let submit = Request::Submit {
+        stream: "//game/main".into(),
+        workspace: "ws".into(),
+        description: "late".into(),
+        changes: vec![kelp_proto::rpc::SubmitChange {
+            path: "late.bin".into(),
+            action: kelp_proto::rpc::SubmitAction::Add {
+                file: kelp_proto::rpc::FileInfo {
+                    content,
+                    size: 50_000,
+                    executable: false,
+                },
+            },
+        }],
+        integration: None,
+        review: None,
+        fixes: Vec::new(),
+        moves: Vec::new(),
+    };
+    conn.call(&submit).await.unwrap();
+
+    pause.resume.notify_one();
+    let Reply::Gc(report) = gc.await.unwrap().unwrap() else {
+        panic!("unexpected reply");
+    };
+    assert_eq!(report.chunks_deleted, 0, "{report:?}");
+    assert_eq!(report.manifests_deleted, 0, "{report:?}");
+    fsck_clean(&server).await;
+}
+
+#[tokio::test]
 async fn obliterate_waits_for_a_collection_in_progress() {
     let (server, pause) = paused_server().await;
     let conn = server.add_user("alice").await;

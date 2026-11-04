@@ -57,6 +57,15 @@ pub(super) async fn put_chunks(state: &Arc<State>, count: u32, recv: &mut RecvSt
     Ok(Reply::Ok)
 }
 
+/// Sends the chunks `ids`.
+///
+/// Content is not checked against protections: chunk and content ids are
+/// BLAKE3 hashes, which act as capabilities. A user learns the content ids
+/// of files only from replies filtered by protections (tree diffs,
+/// describes, shelves, reviews, filelogs), and chunk ids only from the
+/// manifests of those, so asking for content means already being allowed
+/// to know it or knowing the content itself. Any reply that hands out
+/// content ids or trees must keep that true; see `stream::diff_tree`.
 pub(super) async fn get_chunks(
     state: &State,
     ids: Vec<ChunkId>,
@@ -106,6 +115,8 @@ pub(super) async fn put_manifests(state: &State, manifests: Vec<FileManifest>) -
     Ok(Reply::Ok)
 }
 
+/// Returns the manifests of `ids`, unchecked for the reason
+/// [`get_chunks`] gives.
 pub(super) fn get_manifests(state: &State, ids: Vec<ContentId>) -> Response {
     check_batch(ids.len())?;
     let reader = state.reader()?;
