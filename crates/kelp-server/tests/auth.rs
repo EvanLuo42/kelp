@@ -230,6 +230,30 @@ async fn revoking_a_token_ends_the_sessions_using_it() {
 }
 
 #[tokio::test]
+async fn failed_logins_do_not_tell_which_users_exist() {
+    let server = TestServer::start().await;
+    server.add_user("alice").await;
+    server
+        .admin(Request::CreateUser {
+            name: "build".into(),
+            password: None,
+            admin: false,
+            replica: false,
+        })
+        .await;
+    let anon = server.anonymous().await;
+    let mut errors = Vec::new();
+    for (user, password) in [("alice", "wrong"), ("nobody", PASSWORD), ("build", PASSWORD)] {
+        match anon.call(&login_as(user, password)).await {
+            Err(Error::Remote(e)) => errors.push(e),
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+    assert_eq!(errors[0].kind, ErrorKind::Unauthenticated);
+    assert!(errors.iter().all(|e| *e == errors[0]), "{errors:?}");
+}
+
+#[tokio::test]
 async fn a_session_follows_its_user_into_a_merge() {
     let server = TestServer::start().await;
     let alice = server.add_user("alice").await;

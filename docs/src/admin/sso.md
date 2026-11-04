@@ -29,6 +29,7 @@ A provider account is linked to a Kelp user by its issuer and subject, which nev
 The provider's user name, from `username_claim`, is used only on the first login:
 
 1. If an administrator linked the name ahead of time, the login links to that user.
+   The name is compared with the `expect_claim` claim, which is the user name unless configured otherwise.
 2. Otherwise, if no Kelp user has the name and `auto_create` is on, a new user is created and linked.
 3. Otherwise the login is refused.
    A provider user name can be changed or reassigned, so matching it to an existing user would let anyone take over that user.
@@ -52,6 +53,23 @@ Or an administrator links ahead of time, which also handles a provider name that
 $ kelp user link evan --sso evan.luo
 $ kelp user unlink evan
 ```
+
+Whoever first signs on under an expected name becomes that Kelp user.
+With many providers, users can change their own user name, or names are handed to new people, so someone could take the name an administrator expects for another user.
+Match expected names against a claim the provider controls instead, such as a verified email address:
+
+```toml
+[oidc]
+expect_claim = "email"
+```
+
+```console
+$ kelp user link evan --sso evan.luo@studio.example
+```
+
+With `expect_claim = "email"`, an address counts only if the ID token marks it verified (`email_verified`).
+`expect_claim = "sub"` matches the provider's subject, which never changes but is often an opaque id.
+Expected names that were set up before changing `expect_claim` keep their old values, so set them again.
 
 If a user already has a second account created by single sign-on, merge the old one into it; see [Renaming and merging](accounts.md#renaming-and-merging).
 

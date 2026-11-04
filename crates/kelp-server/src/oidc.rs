@@ -43,6 +43,17 @@ pub struct OidcConfig {
     /// cannot have become `_`.
     #[serde(default = "default_username_claim")]
     pub username_claim: String,
+    /// The claim that a first login is matched against the single sign-on
+    /// names administrators expect (`kelp user link <user> --sso <name>`):
+    /// `None` for [`username_claim`](Self::username_claim), `"sub"` for the
+    /// subject, or any other claim. An `"email"` claim only counts when
+    /// the provider marks it verified.
+    ///
+    /// User names are often changeable by users or reassigned, so whoever
+    /// gets a name an administrator expects takes over that Kelp user;
+    /// a claim the provider controls is safer.
+    #[serde(default)]
+    pub expect_claim: Option<String>,
     /// A claim listing group names; users are added to the Kelp groups of
     /// the same names when they log in.
     #[serde(default)]
@@ -108,6 +119,9 @@ pub(crate) struct Identity {
     pub issuer: String,
     /// The provider's stable identifier for the user.
     pub subject: String,
+    /// The name to look up among the names administrators expect, from
+    /// [`OidcConfig::expect_claim`], if the token has one that counts.
+    pub expect_name: Option<String>,
     pub groups: Vec<String>,
 }
 
@@ -234,10 +248,23 @@ impl Oidc {
                     .collect()
             })
             .unwrap_or_default();
+        let expect_name = match self.config.expect_claim.as_deref() {
+            None => Some(user.clone()),
+            Some("sub") => Some(subject.clone()),
+            Some(claim) => {
+                let verified = claims.get("email_verified").and_then(Value::as_bool) == Some(true);
+                claims
+                    .get(claim)
+                    .and_then(Value::as_str)
+                    .filter(|v| !v.is_empty() && (claim != "email" || verified))
+                    .map(str::to_owned)
+            }
+        };
         Ok(Some(Identity {
             user,
             issuer: discovery.issuer.clone(),
             subject,
+            expect_name,
             groups,
         }))
     }

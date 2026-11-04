@@ -40,6 +40,18 @@ async fn totp_is_required_once_enabled_and_codes_are_not_reusable() {
     };
     alice.call(&confirm).await.unwrap();
 
+    // The session alone cannot swap the secret for one it knows.
+    assert_eq!(
+        kind(alice.call(&Request::TotpEnroll).await),
+        ErrorKind::Conflict
+    );
+    let other = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP".to_owned();
+    let replace = Request::TotpConfirm {
+        code: totp_code(&other, now()),
+        secret: other,
+    };
+    assert_eq!(kind(alice.call(&replace).await), ErrorKind::Conflict);
+
     let conn = server.anonymous().await;
     assert_eq!(
         kind(conn.call(&login("alice", None)).await),
@@ -88,6 +100,7 @@ async fn single_sign_on_creates_users_and_maps_groups() {
         auto_create: true,
         require: false,
         managed_groups: Vec::new(),
+        expect_claim: None,
     };
     let server = TestServer::start_configured(|c| c.oidc = Some(config)).await;
     server
@@ -125,6 +138,21 @@ async fn single_sign_on_creates_users_and_maps_groups() {
         panic!("unexpected reply");
     };
     assert_eq!(user, "carol_studio");
+    let refusal = |user: &str| {
+        let conn = &conn;
+        let request = login(user, None);
+        async move {
+            match conn.call(&request).await {
+                Err(Error::Remote(e)) => e,
+                other => panic!("expected an error, got {other:?}"),
+            }
+        }
+    };
+    assert_eq!(
+        refusal("carol_studio").await,
+        refusal("nobody").await,
+        "a password login does not reveal single sign-on users"
+    );
     let Reply::Groups(groups) = conn.call(&Request::ListGroups).await.unwrap() else {
         panic!("unexpected reply");
     };
@@ -159,6 +187,7 @@ fn config(idp: &MockIdp) -> OidcConfig {
         auto_create: true,
         require: false,
         managed_groups: Vec::new(),
+        expect_claim: None,
     }
 }
 
@@ -362,4 +391,57 @@ async fn a_renamed_user_logs_in_under_either_name() {
         })
         .await;
     assert_eq!(kind(reuse), ErrorKind::AlreadyExists);
+}
+
+#[tokio::test]
+async fn expected_names_can_be_matched_on_a_verified_email() {
+    let idp = MockIdp::start().await;
+    let server = TestServer::start_configured(|c| {
+        c.oidc = Some(OidcConfig {
+            expect_claim: Some("email".into()),
+            ..config(&idp)
+        })
+    })
+    .await;
+    server.add_user("evan").await;
+    server
+        .admin(Request::ExpectSso {
+            user: "evan".into(),
+            sso_name: Some("evan@studio.example".into()),
+        })
+        .await;
+    let exp = kelp_core::time::Clock::now(server.clock()) / 1000 + 3600;
+    let sign_on = |subject: &str, name: &str, verified: bool| {
+        let (idp, server) = (&idp, &server);
+        let (subject, name) = (subject.to_owned(), name.to_owned());
+        async move {
+            let anon = server.anonymous().await;
+            let Reply::DeviceCode(device) = anon.call(&Request::OidcStart).await.unwrap() else {
+                panic!("unexpected reply");
+            };
+            idp.approve(json!({
+                "iss": idp.issuer(),
+                "aud": "kelp",
+                "exp": exp,
+                "sub": subject,
+                "preferred_username": name,
+                "email": "evan@studio.example",
+                "email_verified": verified,
+            }));
+            anon.call(&Request::OidcPoll {
+                device_code: device.device_code,
+            })
+            .await
+        }
+    };
+    // Neither an unverified address nor the user name is enough.
+    assert_eq!(
+        signed_on_as(sign_on("x-1", "mallory", false).await),
+        "mallory"
+    );
+    assert_eq!(
+        kind(sign_on("x-2", "evan", false).await),
+        ErrorKind::Unauthenticated
+    );
+    assert_eq!(signed_on_as(sign_on("e-1", "someone", true).await), "evan");
 }
