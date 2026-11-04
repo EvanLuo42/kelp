@@ -12,7 +12,7 @@ A command that is rejected, for example by a conflict, is rejected the same way 
 1. The client finds which chunks the server lacks, uploads them, then uploads the manifests.
    The server checks that every chunk exists and that the manifest hashes to its content id.
 2. The client sends the submit: for each file, its action, new content and the content it started from.
-3. The server checks permissions, locks, review gates and triggers, and that each file's current content equals the content the client started from.
+3. The server checks permissions, locks, review gates and triggers, that each file's current content equals the content the client started from, and, for a merge, that every change of the source since the last merge is in the result or resolved by the submit.
 4. The server builds the new tree and applies the command.
 
 Checking content rather than revision numbers is what lets a stream share its tree with its parent: revision numbers mean nothing across streams, and equal content means no change can be lost.

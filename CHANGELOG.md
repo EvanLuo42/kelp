@@ -12,10 +12,22 @@ The release workflow publishes the section of the tagged version as the GitHub R
 
 - A display name and any number of email addresses per user, set with `kelp user name`, `add-email`, `remove-email` and `primary-email`.
   `changes`, `describe`, `annotate`, reviews and issues show the display name instead of the account name.
+- Depot administrators: the `admin` level in the protections table lets its users create and delete streams, obliterate, force-unlock and manage typemaps, imports and artifacts where the line applies.
+- Partial administrative roles, granted with `role <role> <who>` lines: `accounts`, `operations`, `audit` and `integrations`.
+- `kelp shelves` lists shelves, newest first, optionally of one stream or user.
+- `kelp diff` shows files whose type names a `differ` plugin as the plugin describes them.
+- `kelp diff --tool` and `kelp snapshot diff --tool`, or `KELP_DIFF_TOOL`, open each file in an external diff tool.
 
 ### Changed
 
-- The metadata format is now version 9, which adds user profiles; existing databases migrate on open.
+- The metadata format is now version 10, which adds user profiles and an index of where content appears; existing databases migrate on open.
+- Messages larger than 16 MiB, such as the submit of hundreds of thousands of files, are split across frames, up to 1 GiB, instead of failing.
+- A merge that leaves out a change of its source, for example because the workspace's view does not cover it, is refused.
+
+### Fixed
+
+- Fetching content by its hash now requires read permission on a path it appears at; clients from before this release keep working for users who may read every path.
+- `status` no longer misses a change that keeps a file's size within the same tick of a coarse file system clock, such as FAT's, or of a file server whose clock differs from the client's.
 
 ## [0.1.0] - 2026-10-31
 

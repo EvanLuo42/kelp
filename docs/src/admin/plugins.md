@@ -7,7 +7,7 @@ They are WebAssembly components described by `crates/kelp-plugin/wit/kelp.wit`, 
 |---|---|---|---|
 | `chunker` | chooses chunk boundaries | client, on submit and shelve | `chunker = "plugin:x@1"` |
 | `merger` | merges three versions of a file | client, on resolve | `merge = "plugin:x@1"` |
-| `differ` | describes a change for people | client, on `review show` | `differ = "plugin:x@1"` |
+| `differ` | describes a change for people | client, on `diff` and `review show` | `differ = "plugin:x@1"` |
 | `trigger` | accepts or rejects a submit | server | `[[trigger]]` |
 
 A chunker affects only deduplication, never correctness.

@@ -1,16 +1,12 @@
 # Known Limitations
 
-- **Merge records are trusted.**
-  For a merge that changes files, the server checks that the recorded merge point does not exceed the source's head, but not that the result contains every source change; a resolved conflict can legitimately differ from both sides.
-- **Content reads are not checked against paths.**
-  Fetching chunks and manifests by hash requires a login but not read permission on a path.
-  The hashes are only revealed through paths a user can read, but anyone who learns a hash elsewhere can read the content.
-- **Coarse timestamps.**
-  On file systems with one-second timestamps, such as FAT, a change within the same second that keeps the size can go unnoticed by `status`.
+- **Merges are checked for completeness, not correctness.**
+  The server refuses a merge that leaves out a change of its source, but it trusts the content of every file the merge resolves, since a resolved conflict can legitimately differ from both sides.
+- **Uploads reveal whether content exists.**
+  Asking which chunks the server lacks, as every submit does, tells a user whether a chunk is stored, though not what it belongs to or what it holds.
+- **Content is readable through its history.**
+  A user who may read a path may read every version that path ever had, including versions shelved there, and the versions a stream started with when it was created.
 - **Request size.**
-  A single request is limited to 16 MiB.
-  A submit of hundreds of thousands of files must be split into several submits.
-- **Global administrators.**
-  There are no per-depot administrators or partial administrative roles.
+  A single message, such as a submit, is limited to 1 GiB, which is several million files.
 - **macOS.**
   Projected workspaces are not available on macOS.
