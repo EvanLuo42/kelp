@@ -124,6 +124,19 @@ impl Workspace {
         for (cl, files) in by_cl {
             let id = self.state.snapshots.last().map_or(1, |s| s.id + 1);
             let at = self.clock.now();
+            let moves: BTreeMap<DepotPath, DepotPath> = files
+                .iter()
+                .filter(|f| f.action == OpenAction::MoveTo)
+                .filter_map(|f| {
+                    let from = self.state.moves.get(&f.path)?;
+                    Some((f.path.clone(), from.clone()))
+                })
+                .collect();
+            if moves.is_empty() {
+                self.state.snapshot_moves.remove(&id);
+            } else {
+                self.state.snapshot_moves.insert(id, moves);
+            }
             self.state.snapshots.push(Snapshot {
                 id,
                 cl,
@@ -208,8 +221,46 @@ impl Workspace {
                 .pending
                 .open(file.path.clone(), file.action, cl, splittable)?;
         }
+        let moves = self.moves_of(&snapshot);
+        self.state.moves.retain(|to, _| !paths.contains(to));
+        self.state.moves.extend(moves);
         self.save()?;
         Ok(paths)
+    }
+
+    /// Returns the opened moves among the files of `snapshot`, as in
+    /// [`State::moves`](kelp_workspace::State::moves).
+    ///
+    /// Snapshots taken before Kelp recorded their moves pair the halves of
+    /// a move only if they hold just one.
+    fn moves_of(&self, snapshot: &Snapshot) -> BTreeMap<DepotPath, DepotPath> {
+        let moves = match self.state.snapshot_moves.get(&snapshot.id) {
+            Some(moves) => moves.clone(),
+            None => {
+                fn with(snapshot: &Snapshot, action: OpenAction) -> Vec<&DepotPath> {
+                    snapshot
+                        .files
+                        .iter()
+                        .filter(|f| f.action == action)
+                        .map(|f| &f.path)
+                        .collect()
+                }
+                let to = with(snapshot, OpenAction::MoveTo);
+                let from = with(snapshot, OpenAction::MoveFrom);
+                match (&to[..], &from[..]) {
+                    ([to], [from]) => BTreeMap::from([((*to).clone(), (*from).clone())]),
+                    _ => BTreeMap::new(),
+                }
+            }
+        };
+        // Both halves must be opened as such now.
+        moves
+            .into_iter()
+            .filter(|(to, from)| {
+                self.state.pending.action(to) == Some(OpenAction::MoveTo)
+                    && self.state.pending.action(from) == Some(OpenAction::MoveFrom)
+            })
+            .collect()
     }
 
     /// Deletes snapshot `id`.
@@ -220,6 +271,7 @@ impl Workspace {
     pub fn delete_snapshot(&mut self, id: u32) -> Result<()> {
         self.snapshot_by_id(id)?;
         self.state.snapshots.retain(|s| s.id != id);
+        self.state.snapshot_moves.remove(&id);
         self.save()
     }
 

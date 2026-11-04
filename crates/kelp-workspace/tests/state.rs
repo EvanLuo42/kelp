@@ -102,6 +102,33 @@ fn artifact_directories_may_not_overlap_or_reach_kelp_files() {
 }
 
 #[test]
+fn version_two_state_gains_empty_snapshot_moves() {
+    let sandbox = Sandbox::new();
+    let root = sandbox.dir("ws");
+    let mut state = State {
+        have_cl: 42,
+        ..State::default()
+    };
+    state.moves.insert(
+        depot_path("//game/main/b.txt"),
+        depot_path("//game/main/a.txt"),
+    );
+    state.save(&root).unwrap();
+    let mut bytes = sandbox.read("ws/.kelp/state.bin");
+    assert_eq!(
+        bytes.pop(),
+        Some(0),
+        "an empty map of snapshot moves ends the payload"
+    );
+    bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
+    sandbox.write("ws/.kelp/state.bin", &bytes);
+    let loaded = State::load(&root).unwrap();
+    assert_eq!(loaded.have_cl, 42);
+    assert_eq!(loaded.moves, state.moves);
+    assert!(loaded.snapshot_moves.is_empty());
+}
+
+#[test]
 fn version_one_state_gains_an_empty_list_of_moves() {
     let sandbox = Sandbox::new();
     let root = sandbox.dir("ws");
@@ -112,9 +139,9 @@ fn version_one_state_gains_an_empty_list_of_moves() {
     state.save(&root).unwrap();
     let mut bytes = sandbox.read("ws/.kelp/state.bin");
     assert_eq!(
-        bytes.pop(),
-        Some(0),
-        "an empty map of moves ends the payload"
+        bytes.split_off(bytes.len() - 2),
+        [0, 0],
+        "empty maps of moves and snapshot moves end the payload"
     );
     bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
     sandbox.write("ws/.kelp/state.bin", &bytes);

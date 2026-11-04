@@ -246,6 +246,31 @@ async fn reverting_a_delete_snapshots_a_file_created_again() {
 }
 
 #[tokio::test]
+async fn restoring_a_snapshot_restores_its_moves() {
+    let mut s = setup(&[("a.txt", "a\n")]).await;
+    let (from, to) = (path("a.txt"), path("b.txt"));
+    s.ws.move_file(&s.conn, &from, &to, LocalClId::DEFAULT)
+        .await
+        .unwrap();
+    s.ws.revert(&s.conn, &s.client.cache(), std::slice::from_ref(&to))
+        .await
+        .unwrap();
+    assert!(s.ws.state().moves.is_empty());
+
+    let id = s.ws.state().snapshots.last().unwrap().id;
+    s.ws.restore(&s.conn, &s.client.cache(), id).await.unwrap();
+    assert_eq!(
+        s.ws.state().moves.get(&to),
+        Some(&from),
+        "the halves are paired again"
+    );
+    assert!(!s.client.sandbox().exists("ws/a.txt"));
+    assert_eq!(s.client.sandbox().read("ws/b.txt"), b"a\n");
+    let reopened = Workspace::open(&s.client.workspace_root("ws")).unwrap();
+    assert_eq!(reopened.state().moves.get(&to), Some(&from));
+}
+
+#[tokio::test]
 async fn tracked_files_that_become_ignored_are_not_deleted() {
     let mut s = setup(&[("a.txt", "a\n"), ("Saved/log.txt", "log\n")]).await;
     s.client.sandbox().write("ws/.kelpignore", "Saved/\n");
