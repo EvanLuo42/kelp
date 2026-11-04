@@ -17,6 +17,7 @@ Earlier formats gave a word-final sigma a key of its own.
 The migration re-keys the file trees and the tables keyed by paths; it rewrites tree nodes only if some name is affected, so on most servers it only reads them once.
 If two existing names only now fold alike, both are kept: the one already spelled the new way, or else the first, takes the new key, and the server logs a warning naming the other, which keeps its old key and should be renamed.
 The migration also drops the views that deleted streams left behind, and records from the command log who created each stream; streams whose creation the log does not show have no recorded owner.
+Finally it indexes every path each piece of content appears at, so that fetching content by its hash can be checked against read permission.
 
 ## Protocol versions
 

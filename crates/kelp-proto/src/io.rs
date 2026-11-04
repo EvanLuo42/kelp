@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::{Error, Flags, FrameHeader, HEADER_LEN, MAX_PAYLOAD, MsgType, Result};
+use crate::{Error, Flags, FrameHeader, HEADER_LEN, MAX_MESSAGE, MAX_PAYLOAD, MsgType, Result};
 
 /// How much of a payload is allocated before any of it has arrived.
 const INITIAL_PAYLOAD: usize = 64 << 10;
@@ -66,18 +66,35 @@ pub async fn write_raw<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Writes one frame whose payload is `message` encoded with postcard.
+/// Writes `message` encoded with postcard, in one frame or, if it exceeds
+/// [`MAX_PAYLOAD`], in several frames marked [`Flags::CONTINUED`].
 ///
 /// # Errors
 ///
-/// Returns an error if the encoded message is too large or writing fails.
+/// Returns an error if the encoded message exceeds [`MAX_MESSAGE`] or
+/// writing fails.
 pub async fn write_message<W: AsyncWrite + Unpin, T: Serialize>(
     w: &mut W,
     msg_type: MsgType,
     message: &T,
 ) -> Result<()> {
     let payload = postcard::to_allocvec(message)?;
-    write_raw(w, msg_type, Flags::default(), &payload).await
+    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+    if len > MAX_MESSAGE {
+        return Err(Error::PayloadTooLarge(len));
+    }
+    let mut parts = payload.chunks(MAX_PAYLOAD as usize).peekable();
+    if parts.peek().is_none() {
+        return write_raw(w, msg_type, Flags::default(), &[]).await;
+    }
+    while let Some(part) = parts.next() {
+        let flags = match parts.peek() {
+            Some(_) => Flags::CONTINUED,
+            None => Flags::default(),
+        };
+        write_raw(w, msg_type, flags, part).await?;
+    }
+    Ok(())
 }
 
 /// Writes a chunk frame: the 32-byte chunk id followed by its bytes.
@@ -106,12 +123,65 @@ pub fn split_chunk(payload: &[u8]) -> Result<([u8; 32], &[u8])> {
     Ok((id.try_into().expect("split at 32 bytes"), data))
 }
 
-/// Reads one frame, or returns `None` if the stream ended cleanly before it.
+/// Reads one message, joining frames marked [`Flags::CONTINUED`], or returns
+/// `None` if the stream ended cleanly before it.
 ///
 /// # Errors
 ///
-/// Returns an error if the header is invalid or the stream ends mid-frame.
+/// Returns an error if a header is invalid, the stream ends mid-message, or
+/// the message exceeds [`MAX_MESSAGE`].
 pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Frame>> {
+    read_frame_within(r, MAX_MESSAGE).await
+}
+
+/// Like [`read_frame`], refusing a message larger than `limit` bytes.
+///
+/// # Errors
+///
+/// As for [`read_frame`], with [`Error::PayloadTooLarge`] for a message
+/// larger than `limit`.
+pub async fn read_frame_within<R: AsyncRead + Unpin>(
+    r: &mut R,
+    limit: u32,
+) -> Result<Option<Frame>> {
+    let Some(mut header) = read_header(r).await? else {
+        return Ok(None);
+    };
+    let mut payload = Vec::new();
+    loop {
+        let total = payload.len() as u64 + u64::from(header.payload_len);
+        if total > u64::from(limit) {
+            return Err(Error::PayloadTooLarge(
+                u32::try_from(total).unwrap_or(u32::MAX),
+            ));
+        }
+        // The buffer grows as bytes arrive, so a header that merely claims a
+        // large payload does not commit memory for it.
+        let len = header.payload_len as usize;
+        let expected = payload.len() + len;
+        payload.reserve(len.min(INITIAL_PAYLOAD));
+        (&mut *r).take(len as u64).read_to_end(&mut payload).await?;
+        if payload.len() != expected {
+            return Err(Error::UnexpectedEof);
+        }
+        if !header.flags.contains(Flags::CONTINUED) {
+            break;
+        }
+        let next = read_header(r).await?.ok_or(Error::UnexpectedEof)?;
+        if next.msg_type != header.msg_type {
+            return Err(Error::Unexpected {
+                expected: header.msg_type,
+                got: next.msg_type,
+            });
+        }
+        header = next;
+    }
+    header.flags = Flags(header.flags.0 & !Flags::CONTINUED.0);
+    header.payload_len = u32::try_from(payload.len()).expect("limited to a u32");
+    Ok(Some(Frame { header, payload }))
+}
+
+async fn read_header<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<FrameHeader>> {
     let mut buf = [0u8; HEADER_LEN];
     let mut filled = 0;
     while filled < HEADER_LEN {
@@ -121,19 +191,10 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Frame>
             n => filled += n,
         }
     }
-    let header = FrameHeader::decode(&buf)?;
-    let len = header.payload_len as usize;
-    // The buffer grows as bytes arrive, so a header that merely claims a
-    // large payload does not commit memory for it.
-    let mut payload = Vec::with_capacity(len.min(INITIAL_PAYLOAD));
-    (&mut *r).take(len as u64).read_to_end(&mut payload).await?;
-    if payload.len() != len {
-        return Err(Error::UnexpectedEof);
-    }
-    Ok(Some(Frame { header, payload }))
+    FrameHeader::decode(&buf).map(Some)
 }
 
-/// Reads one frame, treating the end of the stream as an error.
+/// Reads one message, treating the end of the stream as an error.
 ///
 /// # Errors
 ///
@@ -141,4 +202,16 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Frame>
 /// [`read_frame`].
 pub async fn expect_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Frame> {
     read_frame(r).await?.ok_or(Error::UnexpectedEof)
+}
+
+/// Like [`expect_frame`], refusing a message larger than `limit` bytes.
+///
+/// # Errors
+///
+/// As for [`read_frame_within`], and [`Error::UnexpectedEof`] if the stream
+/// has ended.
+pub async fn expect_frame_within<R: AsyncRead + Unpin>(r: &mut R, limit: u32) -> Result<Frame> {
+    read_frame_within(r, limit)
+        .await?
+        .ok_or(Error::UnexpectedEof)
 }

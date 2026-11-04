@@ -3,6 +3,7 @@
 mod admin;
 mod artifact;
 mod daemon;
+mod difftool;
 mod issue;
 mod plugin;
 mod progress;
@@ -284,6 +285,17 @@ enum Cmd {
     },
     /// Deletes a shelf.
     DeleteShelf { shelf: u64 },
+    /// Lists shelves, newest first.
+    Shelves {
+        /// Limits the list to one stream.
+        #[arg(short, long)]
+        stream: Option<String>,
+        /// Limits the list to the shelves of one user.
+        #[arg(short, long)]
+        user: Option<String>,
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: u32,
+    },
     /// Merges another stream into a new changelist.
     ///
     /// The source defaults to the parent stream.
@@ -322,7 +334,15 @@ enum Cmd {
     /// Shows how files differ from the versions synced.
     ///
     /// Covers opened files and unopened changes, under `paths` if given.
-    Diff { paths: Vec<PathBuf> },
+    /// Files whose type names a differ plugin are shown as the plugin
+    /// describes them.
+    Diff {
+        paths: Vec<PathBuf>,
+        /// Opens each file in a diff tool instead, such as
+        /// `"meld {old} {new}"`; defaults to `KELP_DIFF_TOOL`.
+        #[arg(long)]
+        tool: Option<String>,
+    },
     /// Discards changes to files that are not opened.
     ///
     /// Puts files that are not opened back as synced and deletes files the
@@ -382,7 +402,14 @@ enum SnapshotCmd {
     /// Deletes a snapshot.
     Delete { id: u32 },
     /// Shows the differences between two snapshots, or a snapshot and the disk.
-    Diff { old: u32, new: Option<u32> },
+    Diff {
+        old: u32,
+        new: Option<u32>,
+        /// Opens each file in a diff tool instead; defaults to
+        /// `KELP_DIFF_TOOL`.
+        #[arg(long)]
+        tool: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

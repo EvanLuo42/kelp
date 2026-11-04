@@ -41,6 +41,8 @@ pub(in crate::db) fn apply(txn: &WriteTransaction, cmd: &Governance, origin: Ori
                 at: *at,
             };
             plugins.insert(key.as_str(), enc(&record).as_slice())?;
+            drop(plugins);
+            crate::db::content_refs::add(txn, content, &crate::db::ContentRef::Plugin)?;
         }
         Governance::DeletePlugin { name, version } => {
             if txn

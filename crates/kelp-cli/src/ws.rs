@@ -18,6 +18,7 @@ use crate::{Accept, ClCmd, Cmd, SnapshotCmd, daemon};
 pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyhow::Result<()> {
     let abs =
         |paths: Vec<PathBuf>| -> Vec<PathBuf> { paths.into_iter().map(|p| cwd.join(p)).collect() };
+    let mut diff_tool = None;
     let op = match command {
         Cmd::Sync { targets } => {
             let mut rev = None;
@@ -43,7 +44,10 @@ pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyh
         }
         Cmd::Status => Op::Status,
         Cmd::Fstat { paths } => Op::Inspect { paths: abs(paths) },
-        Cmd::Diff { paths } => Op::Diff { paths: abs(paths) },
+        Cmd::Diff { paths, tool } => {
+            diff_tool = crate::difftool::chosen(tool);
+            Op::Diff { paths: abs(paths) }
+        }
         Cmd::Clean { paths, dry_run } => {
             notice("Scanning the workspace...");
             Op::Clean {
@@ -132,13 +136,19 @@ pub async fn run(home: &Home, cwd: &Path, command: Cmd, no_daemon: bool) -> anyh
         Cmd::Snapshot(SnapshotCmd::List) => Op::Snapshots,
         Cmd::Snapshot(SnapshotCmd::Restore { id }) => Op::Restore { id },
         Cmd::Snapshot(SnapshotCmd::Delete { id }) => Op::DeleteSnapshot { id },
-        Cmd::Snapshot(SnapshotCmd::Diff { old, new }) => Op::DiffSnapshots {
-            old: SnapshotSide::Snapshot(old),
-            new: new.map_or(SnapshotSide::Working, SnapshotSide::Snapshot),
-        },
+        Cmd::Snapshot(SnapshotCmd::Diff { old, new, tool }) => {
+            diff_tool = crate::difftool::chosen(tool);
+            Op::DiffSnapshots {
+                old: SnapshotSide::Snapshot(old),
+                new: new.map_or(SnapshotSide::Working, SnapshotSide::Snapshot),
+            }
+        }
         command => return server_query(home, cwd, command).await,
     };
-    print(daemon::execute(home, cwd, op, no_daemon).await?);
+    match (daemon::execute(home, cwd, op, no_daemon).await?, diff_tool) {
+        (Outcome::Diff(diffs), Some(tool)) => crate::difftool::run(&tool, &diffs)?,
+        (outcome, _) => print(outcome),
+    }
     Ok(())
 }
 

@@ -71,6 +71,13 @@ $ kelp unshelve 42
 $ kelp delete-shelf 42
 ```
 
+`kelp shelves` lists shelves, newest first, limited to one stream with `--stream` or one user's with `--user`:
+
+```console
+$ kelp shelves --user alice
+shelf 42     //game/main by alice@alice-pc (3 files) Fix the bridge collision
+```
+
 A shelf takes a changelist number from the same sequence as submits.
 Shelving the same changelist again replaces the shelf and keeps its number.
 `unshelve` requires the files to be at the versions the shelf was based on, and opens them in a new changelist, or in the one given with `-c`.

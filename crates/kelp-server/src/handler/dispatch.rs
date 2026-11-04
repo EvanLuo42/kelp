@@ -57,7 +57,8 @@ pub(super) async fn dispatch(
         | Request::PutChunks { .. }
         | Request::GetChunks { .. }
         | Request::PutManifests { .. }
-        | Request::GetManifests { .. }) => content(state, r, send, recv).await,
+        | Request::GetManifests { .. }
+        | Request::GetContentChunks { .. }) => content(state, access, r, send, recv).await,
         r @ (Request::Submit { .. }
         | Request::Filelog { .. }
         | Request::Changes { .. }
@@ -67,7 +68,8 @@ pub(super) async fn dispatch(
         | Request::ListLocks { .. }
         | Request::Shelve { .. }
         | Request::GetShelf { .. }
-        | Request::DeleteShelf { .. }) => changes(state, access, r).await,
+        | Request::DeleteShelf { .. }
+        | Request::ListShelves { .. }) => changes(state, access, r).await,
         r @ (Request::ClusterStatus
         | Request::Gc { .. }
         | Request::Obliterate { .. }
@@ -200,6 +202,7 @@ async fn streams(state: &Arc<State>, access: Access, request: Request) -> Respon
 
 async fn content(
     state: &Arc<State>,
+    access: Access,
     request: Request,
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -209,6 +212,7 @@ async fn content(
         Request::PutChunks { count } => content::put_chunks(state, count, recv).await,
         Request::GetChunks { ids } => {
             check_batch(ids.len())?;
+            content::require_reads_everything(&access)?;
             edge::fill_chunks(state, &ids).await?;
             content::get_chunks(state, ids, send).await
         }
@@ -216,7 +220,15 @@ async fn content(
         Request::GetManifests { ids } => {
             check_batch(ids.len())?;
             edge::fill_manifests(state, &ids).await?;
-            content::get_manifests(state, ids)
+            content::get_manifests(state, &access, ids)
+        }
+        Request::GetContentChunks { contents, ids } => {
+            check_batch(contents.len())?;
+            check_batch(ids.len())?;
+            edge::fill_manifests(state, &contents).await?;
+            content::check_content_chunks(state, &access, &contents, &ids)?;
+            edge::fill_chunks(state, &ids).await?;
+            content::get_chunks(state, ids, send).await
         }
         _ => unreachable!("dispatched by area"),
     }
@@ -270,6 +282,11 @@ async fn changes(state: &Arc<State>, access: Access, request: Request) -> Respon
         } => change::shelve(state, &access, shelf, stream, workspace, description, files).await,
         Request::GetShelf { cl } => change::get_shelf(state, &access, cl),
         Request::DeleteShelf { cl } => change::delete_shelf(state, &access, cl).await,
+        Request::ListShelves {
+            stream,
+            owner,
+            limit,
+        } => change::list_shelves(state, &access, stream, owner, limit),
         _ => unreachable!("dispatched by area"),
     }
 }
@@ -277,7 +294,7 @@ async fn changes(state: &Arc<State>, access: Access, request: Request) -> Respon
 async fn admin(state: &Arc<State>, access: Access, request: Request) -> Response {
     match request {
         Request::ClusterStatus => {
-            access.require_admin()?;
+            access.require_role(kelp_meta::acl::Role::Operations)?;
             let cluster = state.cluster().ok_or_else(|| {
                 ErrorReply::new(ErrorKind::Invalid, "this server is not in a commit group")
             })?;

@@ -90,6 +90,7 @@ pub(super) fn apply(txn: &WriteTransaction, args: &[String]) -> Result<()> {
         }
     }
 
+    let mut forgotten = Vec::new();
     let mut revisions = txn.open_table(REVISIONS)?;
     for pattern in &patterns {
         let key = pattern.path.key().to_owned();
@@ -108,7 +109,12 @@ pub(super) fn apply(txn: &WriteTransaction, args: &[String]) -> Result<()> {
             })
             .collect::<std::result::Result<_, _>>()?;
         for (path, rev) in doomed {
-            revisions.remove((path.as_str(), rev))?;
+            if let Some(old) = revisions.remove((path.as_str(), rev))? {
+                let old: crate::record::Revision = dec("revisions", old.value())?;
+                if let Some(content) = old.content {
+                    forgotten.push((content, old.path));
+                }
+            }
         }
     }
     drop(revisions);
@@ -194,10 +200,18 @@ pub(super) fn apply(txn: &WriteTransaction, args: &[String]) -> Result<()> {
         let before = shelf.contents.files.len();
         let imports = super::imports::load(txn, &shelf.contents.stream)?;
         let stream = shelf.contents.stream.clone();
-        shelf
-            .contents
-            .files
-            .retain(|f| !matches(&f.path) && !matches(&real_path(&stream, &imports, &f.path)));
+        let gone = |f: &crate::FileChange| {
+            matches(&f.path) || matches(&real_path(&stream, &imports, &f.path))
+        };
+        forgotten.extend(
+            shelf
+                .contents
+                .files
+                .iter()
+                .filter(|f| gone(f))
+                .filter_map(|f| Some((f.action.data()?.content, f.path.clone()))),
+        );
+        shelf.contents.files.retain(|f| !gone(f));
         match (shelf.contents.files.len(), before) {
             (0, _) => {
                 shelves.remove(shelf.number.0)?;
@@ -210,6 +224,9 @@ pub(super) fn apply(txn: &WriteTransaction, args: &[String]) -> Result<()> {
         }
     }
     drop(shelves);
+    for (content, path) in forgotten {
+        super::content_refs::remove(txn, &content, &super::ContentRef::File(path))?;
+    }
     for shelf in emptied {
         super::governance::reviews::shelf_deleted(txn, shelf)?;
     }

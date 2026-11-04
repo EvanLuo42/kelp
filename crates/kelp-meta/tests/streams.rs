@@ -186,3 +186,68 @@ fn stream_creation_rules() {
         Err(Error::Invalid(_))
     ));
 }
+
+#[test]
+fn a_merge_must_carry_every_change_of_its_source() {
+    let f = MetaFixture::new();
+    f.submit(
+        "//game/main",
+        vec![
+            f.add("//game/main/a.txt", b"a1"),
+            f.add("//game/main/b.txt", b"b1"),
+            f.add("//game/main/c.txt", b"c1"),
+        ],
+    )
+    .unwrap();
+    f.create_stream("//game/dev", StreamKind::Development, "//game/main");
+    f.submit(
+        "//game/dev",
+        vec![f.edit("//game/dev/b.txt", b"b1", b"mine")],
+    )
+    .unwrap();
+    f.submit(
+        "//game/main",
+        vec![f.edit("//game/main/a.txt", b"a1", b"a2")],
+    )
+    .unwrap();
+    let head = f
+        .submit(
+            "//game/main",
+            vec![
+                f.edit("//game/main/b.txt", b"b1", b"b2"),
+                f.edit("//game/main/c.txt", b"c1", b"c2"),
+            ],
+        )
+        .unwrap();
+
+    // Leaving out c.txt, as a workspace whose view lacks it would.
+    let partial = f.submit_as(
+        "//game/dev",
+        "alice",
+        "ws",
+        vec![
+            f.edit("//game/dev/a.txt", b"a1", b"a2"),
+            f.edit("//game/dev/b.txt", b"mine", b"merged"),
+        ],
+        Some(("//game/main", head.0)),
+    );
+    let Err(Error::Conflict(lines)) = partial else {
+        panic!("a partial merge was accepted: {partial:?}");
+    };
+    assert!(lines.iter().any(|l| l.contains("c.txt")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("b.txt")), "{lines:?}");
+
+    // A resolved file may differ from both sides.
+    f.submit_as(
+        "//game/dev",
+        "alice",
+        "ws",
+        vec![
+            f.edit("//game/dev/a.txt", b"a1", b"a2"),
+            f.edit("//game/dev/b.txt", b"mine", b"merged"),
+            f.edit("//game/dev/c.txt", b"c1", b"c2"),
+        ],
+        Some(("//game/main", head.0)),
+    )
+    .unwrap();
+}

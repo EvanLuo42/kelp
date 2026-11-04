@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
-use kelp_core::{ChunkId, Hash, TreeId};
+use kelp_core::{ChunkId, ContentId, Hash, TreeId};
 use kelp_proto::io::{expect_frame, split_chunk, write_chunk, write_message};
 use kelp_proto::rpc::{FileDelta, FileInfo, StreamInfo};
 use kelp_proto::{
@@ -238,16 +238,55 @@ impl Connection {
     /// Returns an error if any chunk is missing on the server or does not
     /// match its id.
     pub async fn get_chunks(&self, ids: &[ChunkId]) -> Result<Vec<(ChunkId, Bytes)>> {
-        let batches: Vec<Vec<ChunkId>> = ids.chunks(BATCH_CHUNKS).map(<[_]>::to_vec).collect();
+        let batches: Vec<Request> = ids
+            .chunks(BATCH_CHUNKS)
+            .map(|b| Request::GetChunks { ids: b.to_vec() })
+            .collect();
+        self.download_chunks(batches).await
+    }
+
+    /// Downloads chunks, each named with the content it belongs to, so a
+    /// server that checks read permission on content can allow it.
+    ///
+    /// Falls back to [`get_chunks`](Self::get_chunks) for servers that do
+    /// not check.
+    ///
+    /// # Errors
+    ///
+    /// As for [`get_chunks`](Self::get_chunks), and [`Error::Remote`] if the
+    /// user may not read the content.
+    pub async fn get_content_chunks(
+        &self,
+        wanted: &[(ChunkId, ContentId)],
+    ) -> Result<Vec<(ChunkId, Bytes)>> {
+        if !self
+            .welcome
+            .capabilities
+            .contains(Capabilities::CONTENT_ACCESS)
+        {
+            let ids: Vec<ChunkId> = wanted.iter().map(|(id, _)| *id).collect();
+            return self.get_chunks(&ids).await;
+        }
+        let batches: Vec<Request> = wanted
+            .chunks(BATCH_CHUNKS)
+            .map(|b| {
+                let mut contents: Vec<ContentId> = b.iter().map(|(_, c)| *c).collect();
+                contents.sort();
+                contents.dedup();
+                Request::GetContentChunks {
+                    contents,
+                    ids: b.iter().map(|(id, _)| *id).collect(),
+                }
+            })
+            .collect();
+        self.download_chunks(batches).await
+    }
+
+    async fn download_chunks(&self, batches: Vec<Request>) -> Result<Vec<(ChunkId, Bytes)>> {
         let results = self
-            .run_parallel(batches, |conn, batch| async move {
+            .run_parallel(batches, |conn, request| async move {
                 let (mut send, mut recv) = conn.open().await?;
-                write_message(
-                    &mut send,
-                    MsgType::Request,
-                    &Request::GetChunks { ids: batch },
-                )
-                .await?;
+                write_message(&mut send, MsgType::Request, &request).await?;
                 finish(&mut send);
                 let mut out = Vec::new();
                 loop {

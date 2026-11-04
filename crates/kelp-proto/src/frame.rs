@@ -21,6 +21,12 @@ pub const HEADER_LEN: usize = 16;
 /// The largest payload a single frame may carry, in bytes.
 pub const MAX_PAYLOAD: u32 = 16 << 20;
 
+/// The largest message, in bytes, that may be split across frames marked
+/// [`Flags::CONTINUED`].
+///
+/// Peers that have not logged in are held to [`MAX_PAYLOAD`].
+pub const MAX_MESSAGE: u32 = 1 << 30;
+
 /// Bit flags carried in a frame header.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Flags(pub u16);
@@ -32,6 +38,11 @@ impl Flags {
     pub const COMPRESSED: Self = Self(1 << 1);
     /// The payload is raw bytes rather than a postcard-encoded message.
     pub const RAW: Self = Self(1 << 2);
+    /// The message continues in the next frame, which has the same type.
+    ///
+    /// A message larger than [`MAX_PAYLOAD`] is sent as several frames, all
+    /// but the last with this flag.
+    pub const CONTINUED: Self = Self(1 << 3);
 
     /// Returns `true` if all bits of `other` are set in `self`.
     pub fn contains(self, other: Self) -> bool {

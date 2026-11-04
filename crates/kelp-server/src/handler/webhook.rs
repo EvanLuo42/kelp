@@ -15,7 +15,7 @@ pub(super) async fn set(
     events: Vec<String>,
     paths: Vec<String>,
 ) -> Response {
-    access.require_admin()?;
+    access.require_role(kelp_meta::acl::Role::Integrations)?;
     let cmd = Governance::SetWebhook {
         name,
         url,
@@ -28,7 +28,7 @@ pub(super) async fn set(
 }
 
 pub(super) async fn delete(state: &State, access: &Access, name: String) -> Response {
-    access.require_admin()?;
+    access.require_role(kelp_meta::acl::Role::Integrations)?;
     state
         .commit(access.name(), Governance::DeleteWebhook { name })
         .await?;
@@ -36,7 +36,7 @@ pub(super) async fn delete(state: &State, access: &Access, name: String) -> Resp
 }
 
 pub(super) fn list(state: &State, access: &Access) -> Response {
-    access.require_admin()?;
+    access.require_role(kelp_meta::acl::Role::Integrations)?;
     let hooks = state.reader()?.webhooks().map_err(meta_error)?;
     Ok(Reply::Webhooks(
         hooks
@@ -57,7 +57,7 @@ pub(super) fn deliveries(
     webhook: Option<String>,
     limit: u32,
 ) -> Response {
-    access.require_admin()?;
+    access.require_role(kelp_meta::acl::Role::Integrations)?;
     let deliveries = state
         .reader()?
         .deliveries(webhook.as_deref(), limit.min(1000) as usize)
@@ -79,7 +79,7 @@ pub(super) fn deliveries(
 }
 
 pub(super) async fn redeliver(state: &State, access: &Access, id: u64) -> Response {
-    access.require_admin()?;
+    access.require_role(kelp_meta::acl::Role::Integrations)?;
     state.propose(Proposal::Redeliver { id }).await?;
     Ok(Reply::Ok)
 }

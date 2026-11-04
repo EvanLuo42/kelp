@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kelp_cas::BlobStore;
-use kelp_core::{ChunkId, ContentId, Hash};
+use kelp_core::{ChunkId, ContentId, DepotPath, Hash};
 use kelp_meta::Command;
+use kelp_meta::acl::{Level, Role};
 use kelp_meta::db::{Outcome, Proposal};
 use kelp_proto::rpc::{AuditInfo, FsckInfo, GcReport, LogEntry};
 use kelp_proto::{ErrorKind, ErrorReply, Reply};
@@ -51,7 +52,7 @@ impl Leases {
 }
 
 pub(super) async fn gc(state: &Arc<State>, access: &Access, dry_run: bool) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Operations)?;
     let lease = state.leases.duration.as_millis() as u64;
     // A new leader does not know what was uploaded through its predecessor.
     let since = match state.cluster() {
@@ -145,7 +146,23 @@ pub(super) async fn gc(state: &Arc<State>, access: &Access, dry_run: bool) -> Re
 }
 
 pub(super) async fn obliterate(state: &Arc<State>, access: Access, paths: Vec<String>) -> Response {
-    access.require_admin()?;
+    for path in &paths {
+        let (target, whole) = match path.strip_suffix("/...") {
+            Some(dir) => (dir, true),
+            None => (path.as_str(), false),
+        };
+        let target = DepotPath::parse(target).map_err(super::invalid)?;
+        let allowed = match whole {
+            true => access.administers(&target),
+            false => access.can(Level::Admin, &target),
+        };
+        if !allowed {
+            return Err(ErrorReply::new(
+                ErrorKind::Forbidden,
+                format!("administrator of {path} required"),
+            ));
+        }
+    }
     if paths.is_empty() {
         return Err(ErrorReply::new(
             ErrorKind::Invalid,
@@ -162,7 +179,7 @@ pub(super) async fn obliterate(state: &Arc<State>, access: Access, paths: Vec<St
 }
 
 pub(super) fn audit_log(state: &State, access: &Access, from: u64, limit: u32) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Audit)?;
     let entries = state
         .reader()?
         .audit(from, limit.min(10_000) as usize)
@@ -186,7 +203,7 @@ pub(super) async fn backup(
     dest: String,
     metadata_only: bool,
 ) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Operations)?;
     // Collection must not delete chunks the snapshot still needs.
     let _exclusive = state.gc_lock.lock().await;
     let report = crate::backup::backup(
@@ -207,7 +224,7 @@ pub(super) async fn backup(
 }
 
 pub(super) async fn fsck(state: &Arc<State>, access: &Access, deep: bool) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Operations)?;
     let _exclusive = state.gc_lock.lock().await;
     let r = crate::fsck::fsck(&state.db, &state.blobs, deep)
         .await
@@ -274,7 +291,7 @@ pub(super) async fn read_log(
 }
 
 pub(super) async fn verify_audit(state: &Arc<State>, access: &Access) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Audit)?;
     let state = state.clone();
     blocking(move || {
         let (entries, head) = state.reader()?.verify_audit().map_err(meta_error)?;
@@ -287,7 +304,7 @@ pub(super) async fn verify_audit(state: &Arc<State>, access: &Access) -> Respons
 }
 
 pub(super) async fn tier(state: &Arc<State>, access: &Access) -> Response {
-    access.require_admin()?;
+    access.require_role(Role::Operations)?;
     // Demoted chunks stay readable, so unlike collection this needs no leases.
     let _exclusive = state.gc_lock.lock().await;
     let marking = state.clone();

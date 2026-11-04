@@ -90,6 +90,7 @@ This page lists them all.
 | `kelp shelve` | Shelves a pending changelist on the server |
 | `kelp unshelve` | Opens the files of a shelf in this workspace |
 | `kelp delete-shelf` | Deletes a shelf |
+| `kelp shelves` | Lists shelves with files you can read, newest first, of one `--stream` or `--user` if given |
 | `kelp merge` | Merges changes from another stream (default: the parent) into a new changelist. With `--cl`, picks only that changelist's changes, from the stream it was submitted to unless `--from` names another |
 | `kelp undo` | Opens the reverse of a submitted changelist in a new changelist |
 | `kelp copy-up` | Copies this workspace's stream into its parent |
@@ -99,9 +100,9 @@ This page lists them all.
 | `kelp snapshot list` | Lists snapshots |
 | `kelp snapshot restore` | Restores a snapshot's files and reopens them |
 | `kelp snapshot delete` | Deletes a snapshot |
-| `kelp snapshot diff` | Shows the differences between two snapshots, or a snapshot and the disk |
+| `kelp snapshot diff` | Shows the differences between two snapshots, or a snapshot and the disk; `--tool` opens each file in a diff tool |
 | `kelp fstat` | Shows the state of files: opened, modified, locked, out of date |
-| `kelp diff` | Shows how files differ from the versions synced: opened files and unopened changes, under `paths` if given |
+| `kelp diff` | Shows how files differ from the versions synced: opened files and unopened changes, under `paths` if given. Files whose type names a differ plugin are shown as it describes them; `--tool` opens each file in a diff tool instead |
 | `kelp clean` | Puts files that are not opened back as synced and deletes files the workspace does not track. The discarded changes are not kept |
 | `kelp move` | Moves or renames a file, or a directory of files, keeping their history |
 | `kelp annotate` | Prints each line of a text file with the changelist and author that last changed it |

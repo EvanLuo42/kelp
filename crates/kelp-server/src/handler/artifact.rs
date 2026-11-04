@@ -104,8 +104,23 @@ pub(super) async fn files(state: &Arc<State>, access: Access, id: u64) -> Respon
     .await
 }
 
+/// Applies a command that manages artifacts, which needs an administrator
+/// of the stream they are built from.
 pub(super) async fn admin(state: &State, access: &Access, cmd: Command) -> Response {
-    access.require_admin()?;
+    let stream = match &cmd {
+        Command::PinArtifact { id, .. } | Command::DeleteArtifact { id } => {
+            state
+                .reader()?
+                .artifact(*id)
+                .map_err(meta_error)?
+                .filter(|a| access.sees(&a.stream))
+                .ok_or_else(|| not_found(format!("artifact {id}")))?
+                .stream
+        }
+        Command::SetArtifactRetention { stream, .. } => stream.clone(),
+        _ => unreachable!("not an artifact command"),
+    };
+    access.require_administers(&stream)?;
     state.commit(access.name(), cmd).await?;
     Ok(Reply::Ok)
 }

@@ -14,11 +14,11 @@ mod webhook;
 use std::sync::{Arc, Mutex};
 
 use kelp_client::Connection;
-use kelp_core::DepotPath;
-use kelp_meta::acl::{Level, Protections, Subject};
+use kelp_core::{ContentId, DepotPath};
+use kelp_meta::acl::{Level, Protections, Role, Subject};
 use kelp_meta::db::Reader;
 use kelp_meta::record::User;
-use kelp_proto::io::{expect_frame, write_message};
+use kelp_proto::io::{expect_frame_within, write_message};
 use kelp_proto::{
     Auth, Capabilities, ErrorKind, ErrorReply, Hello, MIN_PROTOCOL_VERSION, MsgType,
     PROTOCOL_VERSION, Reply, Request, RequestClass, Welcome,
@@ -48,6 +48,9 @@ pub(crate) struct Session {
     /// Whether the client's [`Hello`] was accepted. Requests before that
     /// may come from a peer of an incompatible protocol version.
     greeted: std::sync::atomic::AtomicBool,
+    /// Whether the peer is a member of this server's commit group, shown by
+    /// a Raft message with the group's secret.
+    member: std::sync::atomic::AtomicBool,
 }
 
 impl Session {
@@ -78,6 +81,13 @@ impl Session {
             .ok_or_else(|| ended("the session's user no longer exists"))?;
         self.set_user(Some(user.clone()));
         Ok(user)
+    }
+
+    /// Returns `true` if the peer may send messages larger than a frame:
+    /// it has logged in or shown that it is a member of the commit group.
+    fn trusted(&self) -> bool {
+        self.member.load(std::sync::atomic::Ordering::Relaxed)
+            || self.user.lock().expect("session lock").is_some()
     }
 
     fn set_user(&self, user: Option<User>) {
@@ -184,6 +194,77 @@ impl Access {
             )),
         }
     }
+
+    /// Returns `true` if the user is a server administrator or a `role` line
+    /// grants them `role`.
+    fn has_role(&self, role: Role) -> bool {
+        self.user.admin || self.table.has_role(self.subject(), role)
+    }
+
+    fn require_role(&self, role: Role) -> Result<(), ErrorReply> {
+        match self.has_role(role) {
+            true => Ok(()),
+            false => Err(ErrorReply::new(
+                ErrorKind::Forbidden,
+                format!("administrator or the {role} role required"),
+            )),
+        }
+    }
+
+    /// Requires the accounts role for managing `target`. Server
+    /// administrators and replicas are managed only by server
+    /// administrators, so the role cannot be used to gain their powers.
+    fn require_accounts_over(&self, reader: &Reader, target: &str) -> Result<(), ErrorReply> {
+        if self.user.admin {
+            return Ok(());
+        }
+        self.require_role(Role::Accounts)?;
+        let current = reader
+            .alias(target)
+            .map_err(meta_error)?
+            .unwrap_or_else(|| target.to_owned());
+        match reader.user(&current).map_err(meta_error)? {
+            Some(u) if u.admin || u.replica => Err(ErrorReply::new(
+                ErrorKind::Forbidden,
+                format!("{target} is a server administrator or replica; ask an administrator"),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Returns `true` if the user administers the directory `dir`, such as a
+    /// depot or a stream: as a server administrator, or through an `admin`
+    /// line that covers all of it.
+    fn administers(&self, dir: &DepotPath) -> bool {
+        self.user.admin || self.table.dir_level(self.subject(), dir) == Level::Admin
+    }
+
+    fn require_administers(&self, dir: &DepotPath) -> Result<(), ErrorReply> {
+        match self.administers(dir) {
+            true => Ok(()),
+            false => Err(ErrorReply::new(
+                ErrorKind::Forbidden,
+                format!("administrator of {dir} required"),
+            )),
+        }
+    }
+
+    /// Returns `true` if the user may read every path, so reading content
+    /// by its hash needs no check of where it appears.
+    fn reads_everything(&self) -> bool {
+        self.user.admin || self.user.replica || self.table.reads_everything(self.subject())
+    }
+
+    /// Returns `true` if the user may read `content`: it appears at a path
+    /// they can read, in an artifact of a stream they see, or in a plugin.
+    fn reads_content(&self, reader: &Reader, content: &ContentId) -> Result<bool, ErrorReply> {
+        if self.reads_everything() {
+            return Ok(true);
+        }
+        reader
+            .content_visible(content, |p| self.can(Level::Read, p), |s| self.sees(s))
+            .map_err(meta_error)
+    }
 }
 
 pub async fn serve_connection(state: Arc<State>, conn: quinn::Connection) {
@@ -215,7 +296,13 @@ async fn serve_stream(
     mut send: SendStream,
     mut recv: RecvStream,
 ) -> kelp_proto::Result<()> {
-    let frame = expect_frame(&mut recv).await?;
+    // Only a known peer may make the server hold a message larger than a
+    // frame.
+    let limit = match session.trusted() {
+        true => kelp_proto::MAX_MESSAGE,
+        false => kelp_proto::MAX_PAYLOAD,
+    };
+    let frame = expect_frame_within(&mut recv, limit).await?;
     let response = match frame.header.msg_type {
         MsgType::Hello => {
             let hello: Hello = frame.decode()?;
@@ -355,7 +442,7 @@ async fn hello_reply(
         version,
         role: state.server_role(),
         log_index: reader.last_index().map_err(internal)?.0,
-        capabilities: Capabilities::default(),
+        capabilities: Capabilities::CONTENT_ACCESS,
         user: name,
     })
 }
@@ -441,9 +528,11 @@ async fn handle_once(
         let cluster = state.cluster().ok_or_else(|| {
             ErrorReply::new(ErrorKind::Forbidden, "this server is not in a commit group")
         })?;
-        return Ok(Reply::Raft(
-            cluster.serve(secret, *format, *rpc, payload).await?,
-        ));
+        let reply = cluster.serve(secret, *format, *rpc, payload).await?;
+        session
+            .member
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        return Ok(Reply::Raft(reply));
     }
     if let Some(edge) = state.edge() {
         edge.check()?;

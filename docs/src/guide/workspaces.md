@@ -65,6 +65,23 @@ $ kelp fstat Source/main.rs
 `diff` shows the changes as unified diffs.
 `fstat` shows, per file, whether it is opened, modified, locked or out of date.
 
+### Diff tools
+
+A file whose type in the [typemap](typemap.md) names a `differ` plugin is shown as the plugin describes the change, which suits binary assets such as textures and levels.
+See [Plugins](../admin/plugins.md).
+
+To compare files in a program of your own, give it with `--tool`, or set `KELP_DIFF_TOOL` to use it every time:
+
+```console
+$ kelp diff --tool "meld {old} {new}"
+$ kelp snapshot diff 3 --tool "code --diff --wait {old} {new}"
+```
+
+`{old}` and `{new}` stand for files with the two versions, which keep the file's name, and `{path}` for its depot path.
+Without `{old}` and `{new}`, the two files are added to the end of the command.
+The side that does not exist, such as the old side of a new file, is an empty file.
+The tool runs once per file, without a shell; quote words that contain spaces.
+
 Files you change outside of Kelp can be opened in one step:
 
 ```console

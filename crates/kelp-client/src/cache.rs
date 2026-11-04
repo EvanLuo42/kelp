@@ -287,9 +287,17 @@ impl ContentCache {
             .collect();
         let bytes = missing.iter().map(|(_, len)| u64::from(*len)).sum();
         let mut meter = self.meter(Phase::Download, missing.len() as u64, Some(bytes));
+        let mut owners: std::collections::HashMap<ChunkId, ContentId> =
+            std::collections::HashMap::new();
+        for m in &manifests {
+            for c in &m.chunks {
+                owners.entry(c.id).or_insert(m.content);
+            }
+        }
         for window in transfer_windows(&missing) {
-            let ids: Vec<ChunkId> = window.iter().map(|(id, _)| *id).collect();
-            self.put_chunks(conn.get_chunks(&ids).await?, Some(&mut meter))
+            let wanted: Vec<(ChunkId, ContentId)> =
+                window.iter().map(|(id, _)| (*id, owners[id])).collect();
+            self.put_chunks(conn.get_content_chunks(&wanted).await?, Some(&mut meter))
                 .await?;
         }
         Ok(())

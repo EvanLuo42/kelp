@@ -12,7 +12,7 @@ use super::{Access, Response, blocking, meta_error, not_found, parse_path};
 use crate::State;
 
 pub(super) async fn create_depot(state: &State, access: &Access, name: String) -> Response {
-    access.require_admin()?;
+    access.require_administers(&parse_path(&format!("//{name}"))?)?;
     let at = state.clock.now();
     let main = Command::CreateStream {
         path: parse_path(&format!("//{name}/main"))?,
@@ -36,7 +36,7 @@ pub(super) async fn set_typemap(
     depot: String,
     source: String,
 ) -> Response {
-    access.require_admin()?;
+    access.require_administers(&parse_path(&format!("//{depot}"))?)?;
     let cmd = Command::SetTypemap {
         depot,
         source,
@@ -71,12 +71,17 @@ pub(super) async fn set_imports(
     stream: String,
     imports: Vec<ImportInfo>,
 ) -> Response {
-    access.require_admin()?;
+    let target = parse_path(&stream)?;
+    access.require_administers(&target)?;
     let imports = imports
         .into_iter()
         .map(|i| {
             Ok(Import {
-                source: parse_path(&i.source)?,
+                source: {
+                    let source = parse_path(&i.source)?;
+                    access.require_stream(&source)?;
+                    source
+                },
                 from: i.from,
                 to: i.to,
                 at: i.at.map(ClNumber),
@@ -85,7 +90,7 @@ pub(super) async fn set_imports(
         })
         .collect::<Result<_, ErrorReply>>()?;
     let cmd = Command::SetImports {
-        stream: parse_path(&stream)?,
+        stream: target,
         imports,
     };
     state.commit(access.name(), cmd).await?;
@@ -100,19 +105,19 @@ pub(super) async fn delete_stream(state: &State, access: &Access, stream: String
         .stream(&path)
         .map_err(meta_error)?
         .ok_or_else(|| not_found(format!("stream {path}")))?;
-    // Only the owner of a task stream may delete it besides administrators;
-    // a stream with no recorded owner predates owners and is admin-only.
+    // Administrators of the stream delete any; the owner of a task stream
+    // may delete it too. A stream with no recorded owner predates owners.
     let owner = reader.stream_owner(&path).map_err(meta_error)?;
     drop(reader);
     let owns = record.kind == StreamKind::Task
         && owner
             .is_some_and(|o| kelp_meta::db::name_key(&o) == kelp_meta::db::name_key(access.name()));
-    if !owns && !access.is_admin() {
+    if !owns && !access.administers(&path) {
         return Err(ErrorReply::new(
             ErrorKind::Forbidden,
             match record.kind {
                 StreamKind::Task => format!("task stream {path} belongs to someone else"),
-                _ => format!("deleting {path} needs an administrator"),
+                _ => format!("deleting {path} needs an administrator of it"),
             },
         ));
     }
@@ -122,8 +127,8 @@ pub(super) async fn delete_stream(state: &State, access: &Access, stream: String
     Ok(Reply::Ok)
 }
 
-/// Creates a stream. Administrators create any kind; other users who can
-/// read every file of the parent may create task streams of it.
+/// Creates a stream. Administrators of the stream create any kind; other
+/// users who can read every file of the parent may create task streams of it.
 pub(super) async fn create_stream(
     state: &Arc<State>,
     access: Access,
@@ -133,26 +138,30 @@ pub(super) async fn create_stream(
 ) -> Response {
     let kind = meta_kind(kind);
     let parent = parent.as_deref().map(parse_path).transpose()?;
-    let access = match (access.is_admin(), &parent, kind) {
-        (true, _, _) => access,
-        (false, Some(p), StreamKind::Task) => {
-            access.require_stream(p)?;
-            let (checking, p) = (state.clone(), p.clone());
-            blocking(move || {
-                require_whole_tree(&checking, &access, &p)?;
-                Ok(access)
-            })
-            .await?
-        }
-        (false, _, _) => {
-            return Err(ErrorReply::new(
-                ErrorKind::Forbidden,
-                "only administrators create this kind of stream",
-            ));
+    let path = parse_path(&path)?;
+    let access = if access.administers(&path) {
+        access
+    } else {
+        match (&parent, kind) {
+            (Some(p), StreamKind::Task) => {
+                access.require_stream(p)?;
+                let (checking, p) = (state.clone(), p.clone());
+                blocking(move || {
+                    require_whole_tree(&checking, &access, &p)?;
+                    Ok(access)
+                })
+                .await?
+            }
+            _ => {
+                return Err(ErrorReply::new(
+                    ErrorKind::Forbidden,
+                    format!("only administrators of {path} create this kind of stream"),
+                ));
+            }
         }
     };
     let cmd = Command::CreateStream {
-        path: parse_path(&path)?,
+        path,
         kind,
         parent,
         at: state.clock.now(),

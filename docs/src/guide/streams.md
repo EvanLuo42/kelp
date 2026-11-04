@@ -36,6 +36,8 @@ $ kelp submit -m "Merge main"
 `merge` opens every file the parent changed since the last merge in a new changelist.
 Files changed on both sides are scheduled for resolve.
 Submitting the changelist records the merge, so the next merge starts from there.
+The server refuses the submit if it leaves out a change of the parent, for example because the workspace's view does not cover a changed file; merge in a workspace that covers it.
+Files you resolved are taken as you resolved them.
 
 `--from <stream>` merges from a stream other than the parent.
 

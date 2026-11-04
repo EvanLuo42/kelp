@@ -585,6 +585,33 @@ pub async fn run(
                 }
             }
         }
+        Cmd::Shelves {
+            stream,
+            user,
+            limit,
+        } => {
+            let request = Request::ListShelves {
+                stream,
+                owner: user,
+                limit,
+            };
+            let Reply::Shelves(shelves) = connect(home, &server()?).await?.call(&request).await?
+            else {
+                return Err(unexpected());
+            };
+            for s in shelves {
+                let first_line = s.description.lines().next().unwrap_or_default();
+                let owner = s.owner_name.as_deref().unwrap_or(&s.owner);
+                let files = match s.files {
+                    1 => "1 file".to_owned(),
+                    n => format!("{n} files"),
+                };
+                println!(
+                    "shelf {:<6} {} by {owner}@{} ({files}) {first_line}",
+                    s.cl, s.stream, s.workspace
+                );
+            }
+        }
         Cmd::Streams => {
             let Reply::Streams(streams) = connect(home, &server()?)
                 .await?

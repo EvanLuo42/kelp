@@ -91,3 +91,36 @@ async fn payloads_larger_than_the_first_allocation_round_trip() {
     let (got_id, got) = split_chunk(&frame.payload).unwrap();
     assert_eq!((got_id, got), (id.0.0, data.as_slice()));
 }
+
+#[tokio::test]
+async fn messages_larger_than_a_frame_span_several() {
+    let (mut client, mut server) = tokio::io::duplex(1 << 20);
+    let request = Request::Filelog {
+        path: format!("//game/main/{}", "a".repeat(40 << 20)),
+    };
+    let writer = tokio::spawn(async move {
+        write_message(&mut client, MsgType::Request, &request)
+            .await
+            .unwrap();
+        request
+    });
+    let frame = expect_frame(&mut server).await.unwrap();
+    let request = writer.await.unwrap();
+    assert_eq!(frame.decode::<Request>().unwrap(), request);
+    assert!(read_frame(&mut server).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_limit_refuses_joined_messages_beyond_it() {
+    let (mut client, mut server) = tokio::io::duplex(1 << 20);
+    let request = Request::Filelog {
+        path: format!("//game/main/{}", "a".repeat(20 << 20)),
+    };
+    tokio::spawn(async move {
+        let _ = write_message(&mut client, MsgType::Request, &request).await;
+    });
+    assert!(matches!(
+        kelp_proto::io::read_frame_within(&mut server, kelp_proto::MAX_PAYLOAD).await,
+        Err(Error::PayloadTooLarge(_))
+    ));
+}

@@ -3,6 +3,7 @@
 mod accounts;
 mod apply;
 mod artifacts;
+pub(crate) mod content_refs;
 mod gc;
 mod governance;
 mod imports;
@@ -27,6 +28,7 @@ use serde::de::DeserializeOwned;
 
 pub use accounts::SsoIdentity;
 use apply::Origin;
+pub use content_refs::ContentRef;
 pub use governance::webhooks;
 pub use imports::RealPaths;
 pub use nodes::ReadNodes;
@@ -83,6 +85,7 @@ const PROFILES: TableDefinition<&str, Bytes> = TableDefinition::new("profiles");
 const EMAIL_OWNERS: TableDefinition<&str, &str> = TableDefinition::new("email_owners");
 const MOVES: TableDefinition<(&str, u64), Bytes> = TableDefinition::new("moves");
 const STREAM_OWNERS: TableDefinition<&str, &str> = TableDefinition::new("stream_owners");
+const CONTENT_REFS: TableDefinition<(&[u8], &str), ()> = TableDefinition::new("content_refs");
 
 const LAST_INDEX: &str = "last_index";
 const FORMAT: &str = "format_version";
@@ -120,10 +123,13 @@ const MIGRATIONS: &[Migration] = &[
     |_| Ok(()),
     // 10 folds names one character at a time, so keys with a final sigma
     // and similar letters change; drops the views deleted streams left
-    // behind; and records who created each stream, from the log.
+    // behind; records who created each stream, from the log; and indexes
+    // where content appears, under the new keys, so reads of it can be
+    // checked.
     |txn| {
         refold::refold(txn)?;
-        streams::replay_stream_lives(txn)
+        streams::replay_stream_lives(txn)?;
+        content_refs::backfill(txn)
     },
 ];
 const NEXT_CL: &str = "next_cl";
@@ -237,6 +243,7 @@ impl MetaDb {
         txn.open_table(PROFILES)?;
         txn.open_table(EMAIL_OWNERS)?;
         txn.open_table(STREAM_OWNERS)?;
+        txn.open_table(CONTENT_REFS)?;
         txn.commit()?;
         Ok(Self { db })
     }
