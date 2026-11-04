@@ -129,6 +129,36 @@ fn an_unknown_time_never_matches_an_unreadable_one() {
     assert_eq!(ws.status().unwrap().modified, [path("a.txt")]);
 }
 
+#[tokio::test]
+async fn an_operation_keeps_the_lock_its_wait_took() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use kelp_client::Home;
+    use kelp_client::ops::{Op, Session, if_unlocked};
+
+    let sandbox = Sandbox::new();
+    let root = sandbox.dir("ws");
+    Workspace::create(&root, Config::new("ws", "localhost:7474", &stream())).unwrap();
+    let session = Session::new(Home::new(sandbox.dir("home")));
+    // Another process that keeps taking the lock for a moment.
+    let stop = Arc::new(AtomicBool::new(false));
+    let rival = {
+        let (stop, root) = (stop.clone(), root.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                if_unlocked(&root, || std::thread::sleep(Duration::from_micros(200))).unwrap();
+            }
+        })
+    };
+    for _ in 0..50 {
+        let result = session.execute(&root, Op::Status).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+    stop.store(true, Ordering::Relaxed);
+    rival.join().unwrap();
+}
+
 #[test]
 fn refreshing_the_index_skips_artifact_directories() {
     let sandbox = Sandbox::new();
