@@ -46,6 +46,11 @@ async fn execute_with(
             tracing::info!("kelpd {version} is another version; restarting it");
             stop(home, cwd, &version).await?;
         }
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            // Another user serves kelpd's pipe; never talk to it, and run here.
+            eprintln!("warning: {e}; running in this process");
+            return Ok(in_this_process(op).await?);
+        }
         Err(Error::Io(e)) => tracing::info!("kelpd is not reachable ({e}); starting it"),
         Err(e) => return Err(e.into()),
     }

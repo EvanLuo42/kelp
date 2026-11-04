@@ -141,7 +141,22 @@ async fn handle(
     daemon: &Arc<Daemon>,
     mut stream: impl AsyncRead + AsyncWrite + Unpin,
 ) -> kelp_proto::Result<()> {
-    let request: IpcRequest = expect_frame(&mut stream).await?.decode()?;
+    let frame = expect_frame(&mut stream).await?;
+    let request: IpcRequest = match frame.decode() {
+        Ok(request) => request,
+        Err(e) => {
+            // A client of another version may send an `Op` this kelpd cannot
+            // decode; the version leads the request, so answer that instead.
+            return match postcard::take_from_bytes::<String>(&frame.payload) {
+                Ok((version, _)) if version != VERSION => {
+                    tracing::info!(client = %version, "client version differs");
+                    let reply = IpcReply::VersionMismatch(VERSION.to_owned());
+                    write_message(&mut stream, MsgType::Reply, &reply).await
+                }
+                _ => Err(e),
+            };
+        }
+    };
     let cwd = request.cwd.clone();
     tracing::debug!(cwd = %cwd.display(), op = ?request.op, "request");
     let started = Instant::now();

@@ -95,13 +95,25 @@ pub(super) async fn set_imports(
 pub(super) async fn delete_stream(state: &State, access: &Access, stream: String) -> Response {
     let path = parse_path(&stream)?;
     access.require_stream(&path)?;
-    let record = state
-        .reader()?
+    let reader = state.reader()?;
+    let record = reader
         .stream(&path)
         .map_err(meta_error)?
         .ok_or_else(|| not_found(format!("stream {path}")))?;
-    if record.kind != StreamKind::Task {
-        access.require_admin()?;
+    // Only the owner of a task stream may delete it besides administrators;
+    // a stream with no recorded owner predates owners and is admin-only.
+    let owner = reader.stream_owner(&path).map_err(meta_error)?;
+    drop(reader);
+    let owns = record.kind == StreamKind::Task
+        && owner.is_some_and(|o| kelp_meta::db::name_key(&o) == kelp_meta::db::name_key(access.name()));
+    if !owns && !access.is_admin() {
+        return Err(ErrorReply::new(
+            ErrorKind::Forbidden,
+            match record.kind {
+                StreamKind::Task => format!("task stream {path} belongs to someone else"),
+                _ => format!("deleting {path} needs an administrator"),
+            },
+        ));
     }
     state
         .commit(access.name(), Command::DeleteStream { path })

@@ -27,6 +27,9 @@ const LOCK_POLL: Duration = Duration::from_millis(50);
 const LOCK_NOTICE: Duration = Duration::from_millis(500);
 
 /// A workspace operation. Paths are absolute file system paths.
+///
+/// kelpd of one version executes a `Shutdown` sent by a client of another,
+/// so `Shutdown` must keep its variant index: add new variants after it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
     Sync {
