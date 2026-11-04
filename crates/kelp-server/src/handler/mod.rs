@@ -498,7 +498,7 @@ fn parse_path(s: &str) -> Result<DepotPath, ErrorReply> {
     DepotPath::parse(s).map_err(invalid)
 }
 
-fn check_batch(len: usize) -> Result<(), ErrorReply> {
+pub(crate) fn check_batch(len: usize) -> Result<(), ErrorReply> {
     match len {
         0..=MAX_BATCH => Ok(()),
         _ => Err(ErrorReply::new(

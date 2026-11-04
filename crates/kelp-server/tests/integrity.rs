@@ -200,6 +200,57 @@ async fn obliterate_waits_for_a_collection_in_progress() {
 }
 
 #[tokio::test]
+async fn edges_keep_only_verified_manifests_and_bound_uploads() {
+    let server = TestServer::start().await;
+    server.create_depot("game").await;
+    server.add_user("alice").await;
+    let edge = server.start_edge("edge").await;
+    let conn = edge.login("alice").await;
+
+    let oversized = conn.call(&Request::PutChunks { count: 1 << 20 }).await;
+    assert!(
+        matches!(oversized, Err(kelp_client::Error::Remote(ref e)) if e.kind == kelp_proto::ErrorKind::Invalid),
+        "{oversized:?}"
+    );
+
+    let data = pseudo_random(20_000, 6);
+    let id = ChunkId::of(&data);
+    conn.put_chunks(vec![(id, Bytes::from(data.clone()))])
+        .await
+        .unwrap();
+    let manifest = |size: u64| FileManifest {
+        content: ContentId(id.0),
+        size,
+        chunks: vec![ChunkRef {
+            id,
+            len: size as u32,
+        }],
+    };
+    conn.call(&Request::PutManifests {
+        manifests: vec![manifest(20_000)],
+    })
+    .await
+    .unwrap();
+    // The commit server keeps its verified manifest and ignores this one;
+    // the edge must not store it either.
+    conn.call(&Request::PutManifests {
+        manifests: vec![manifest(5)],
+    })
+    .await
+    .unwrap();
+    let Reply::Manifests(stored) = conn
+        .call(&Request::GetManifests {
+            ids: vec![ContentId(id.0)],
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected reply");
+    };
+    assert_eq!(stored[0].as_ref().unwrap().size, 20_000);
+}
+
+#[tokio::test]
 async fn manifests_are_verified_and_never_replaced() {
     let server = TestServer::start().await;
     server.create_depot("game").await;

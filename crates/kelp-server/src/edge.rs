@@ -30,6 +30,9 @@ const LOG_BATCH: u32 = 1000;
 const LOG_WAIT: Duration = Duration::from_secs(1);
 const CATCH_UP: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
+/// How many bytes of an upload a forwarding server holds before passing
+/// them on.
+const FORWARD_BYTES: usize = 64 << 20;
 
 /// Where an edge server's commit server is and how to reach it.
 #[derive(Clone, Debug)]
@@ -279,8 +282,13 @@ pub(crate) async fn forward(
 ) -> Result<Reply, ErrorReply> {
     match request {
         Request::PutChunks { count } => {
-            let mut chunks = Vec::with_capacity(count as usize);
-            for _ in 0..count {
+            // The same limit the commit server applies, before anything is
+            // read; the chunks are then passed on in bounded batches rather
+            // than held all at once.
+            crate::handler::check_batch(count as usize)?;
+            let mut batch = Vec::new();
+            let mut buffered = 0;
+            for left in (0..count).rev() {
                 let frame = expect_frame(recv).await.map_err(invalid)?;
                 frame.expect(MsgType::Chunk).map_err(invalid)?;
                 let (id, data) = split_chunk(&frame.payload).map_err(invalid)?;
@@ -291,26 +299,28 @@ pub(crate) async fn forward(
                         format!("chunk {id} does not match its id"),
                     ));
                 }
-                chunks.push((id, Bytes::copy_from_slice(data)));
+                buffered += data.len();
+                batch.push((id, Bytes::copy_from_slice(data)));
+                if buffered >= FORWARD_BYTES || left == 0 {
+                    put_chunks(state, to, conn, std::mem::take(&mut batch)).await?;
+                    buffered = 0;
+                }
             }
-            conn.put_chunks(chunks.clone())
-                .await
-                .map_err(upstream_error)?;
-            if to.shares_storage() {
-                return Ok(Reply::Ok);
+            if !to.shares_storage() {
+                state.blobs.sync().await.map_err(internal)?;
             }
-            for (id, data) in chunks {
-                state.blobs.put(id, data).await.map_err(internal)?;
-            }
-            state.blobs.sync().await.map_err(internal)?;
             Ok(Reply::Ok)
         }
         Request::PutManifests { manifests } if !to.shares_storage() => {
-            let request = Request::PutManifests {
-                manifests: manifests.clone(),
-            };
-            let reply = conn.call(&request).await.map_err(upstream_error)?;
-            state.db.put_manifests(&manifests).map_err(internal)?;
+            let ids: Vec<ContentId> = manifests.iter().map(|m| m.content).collect();
+            let reply = conn
+                .call(&Request::PutManifests { manifests })
+                .await
+                .map_err(upstream_error)?;
+            // Keep what the commit server stored, which it verified, not
+            // the client's claims, and never replace a manifest the edge
+            // has.
+            store_upstream_manifests(state, conn, &ids).await?;
             Ok(reply)
         }
         Request::HasChunks { .. } => conn.call(&request).await.map_err(upstream_error),
@@ -324,6 +334,60 @@ pub(crate) async fn forward(
             Ok(reply)
         }
     }
+}
+
+/// Sends one batch of an upload on to where changes go, and keeps it here
+/// too unless both share storage.
+async fn put_chunks(
+    state: &State,
+    to: Forwarder<'_>,
+    conn: &Connection,
+    batch: Vec<(ChunkId, Bytes)>,
+) -> Result<(), ErrorReply> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    conn.put_chunks(batch.clone())
+        .await
+        .map_err(upstream_error)?;
+    if !to.shares_storage() {
+        for (id, data) in batch {
+            state.blobs.put(id, data).await.map_err(internal)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies the commit server's manifests of `ids` that this server lacks,
+/// asking over `conn`.
+async fn store_upstream_manifests(
+    state: &State,
+    conn: &Connection,
+    ids: &[ContentId],
+) -> Result<(), ErrorReply> {
+    let missing = {
+        let reader = state.reader()?;
+        let mut missing = Vec::new();
+        for id in ids {
+            if reader.manifest(id).map_err(internal)?.is_none() {
+                missing.push(*id);
+            }
+        }
+        missing
+    };
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let request = Request::GetManifests { ids: missing };
+    let Reply::Manifests(found) = conn.call(&request).await.map_err(upstream_error)? else {
+        return Err(unexpected());
+    };
+    let found: Vec<_> = found
+        .into_iter()
+        .flatten()
+        .filter(|m| ids.contains(&m.content))
+        .collect();
+    state.db.put_manifests(&found).map_err(internal)
 }
 
 /// Makes sure the edge has the manifests of `ids` that the commit server has.
