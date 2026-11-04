@@ -114,6 +114,29 @@ pub async fn describe(
     Ok(plugin.describe(host()?, old.as_ref(), new.as_ref())?)
 }
 
+/// Like [`describe`], for content given as bytes, such as a file on disk
+/// that is not on the server yet.
+///
+/// # Errors
+///
+/// Returns an error if the plugin cannot be fetched or fails.
+pub async fn describe_bytes(
+    conn: &Connection,
+    cache: &ContentCache,
+    reference: &str,
+    path: &str,
+    old: Option<&[u8]>,
+    new: Option<&[u8]>,
+) -> Result<String> {
+    let plugin = load(conn, cache, reference).await?;
+    let version = |content: &[u8]| FileVersion {
+        path: path.to_owned(),
+        content: content.to_vec(),
+    };
+    let (old, new) = (old.map(version), new.map(version));
+    Ok(plugin.describe(host()?, old.as_ref(), new.as_ref())?)
+}
+
 /// Chunks a file with a chunker plugin, falling back to FastCDC if the
 /// plugin fails or produces chunks that are too large.
 pub(crate) struct PluginChunker {

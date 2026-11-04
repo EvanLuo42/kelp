@@ -24,9 +24,9 @@ pub use home::{Credentials, Home, ServerEntry};
 pub use index::{DiskEntry, DiskIndex};
 pub use net::{Connection, Trust};
 pub use workspace::{
-    AnnotatedLine, ArtifactUpdate, CleanReport, FileDiff, FileReport, MergeReport, ProjectedFile,
-    Projector, ResolveMode, ResolveOutcome, SkipReason, SnapshotSide, Status, SyncReport,
-    Workspace, annotate, read_file, render_diff,
+    AnnotatedLine, ArtifactUpdate, CleanReport, Described, FileDiff, FileReport, MergeReport,
+    ProjectedFile, Projector, ResolveMode, ResolveOutcome, SkipReason, SnapshotSide, Status,
+    SyncReport, Workspace, annotate, read_file, render_diff,
 };
 
 use kelp_core::DepotPath;

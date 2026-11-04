@@ -177,3 +177,35 @@ async fn triggers_chunkers_mergers_and_differs_run_where_the_typemap_says() {
     .unwrap();
     assert_eq!(summary, "Data/levels.tags: 14 -> 12 bytes");
 }
+
+#[tokio::test]
+async fn diff_shows_files_as_their_differ_plugin_describes_them() {
+    let server = setup().await;
+    let conn = server.add_user("alice").await;
+    let alice = TestClient::new();
+    let mut ws = alice.create_workspace(&server, "ws", &depot_path("//game/main"));
+    alice.sandbox().write("ws/Data/levels.tags", "forest\n");
+    alice.sandbox().write("ws/notes.txt", "one\n");
+    ws.reconcile(&conn).await.unwrap();
+    ws.submit(
+        &conn,
+        &alice.cache(),
+        LocalClId::DEFAULT,
+        Some("start #1".into()),
+    )
+    .await
+    .unwrap();
+
+    alice
+        .sandbox()
+        .write("ws/Data/levels.tags", "forest\ndesert\n");
+    alice.sandbox().write("ws/notes.txt", "two\n");
+    let diffs = ws.diff(&conn, &alice.cache(), &[]).await.unwrap();
+    let rendered: Vec<String> = diffs.iter().map(kelp_client::render_diff).collect();
+    assert_eq!(
+        rendered[0],
+        "//game/main/Data/levels.tags (plugin:size-differ@1)\nData/levels.tags: 7 -> 14 bytes\n"
+    );
+    assert!(diffs[1].described.is_none());
+    assert!(rendered[1].contains("-one\n+two\n"), "{}", rendered[1]);
+}

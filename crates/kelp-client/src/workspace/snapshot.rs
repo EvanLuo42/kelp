@@ -24,6 +24,17 @@ pub struct FileDiff {
     pub path: DepotPath,
     pub old: Option<Vec<u8>>,
     pub new: Option<Vec<u8>>,
+    /// How the differ plugin the file's type names describes the change.
+    pub described: Option<Described>,
+}
+
+/// A differ plugin's description of a change.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Described {
+    /// The plugin, as `plugin:<name>@<version>`.
+    pub by: String,
+    /// The description, or why the plugin could not give one.
+    pub text: std::result::Result<String, String>,
 }
 
 impl Workspace {
@@ -263,6 +274,7 @@ impl Workspace {
                     path,
                     old: a,
                     new: b,
+                    described: None,
                 });
             }
         }
@@ -297,7 +309,23 @@ impl Workspace {
 }
 
 /// Renders a unified diff of `diff`, or a note for binary content.
+///
+/// A file whose type names a differ plugin is shown as the plugin
+/// describes the change.
 pub fn render_diff(diff: &FileDiff) -> String {
+    if let Some(d) = &diff.described {
+        let mut out = format!("{} ({})\n", diff.path, d.by);
+        match &d.text {
+            Ok(text) => {
+                out.push_str(text);
+                if !text.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            Err(e) => out.push_str(&format!("{} failed: {e}\n", d.by)),
+        }
+        return out;
+    }
     let text = |b: &Option<Vec<u8>>| match b {
         Some(bytes) => std::str::from_utf8(bytes).ok().map(str::to_owned),
         None => Some(String::new()),

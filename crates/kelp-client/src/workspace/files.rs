@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use kelp_core::{ContentId, DepotPath};
 
-use super::{FileDiff, Workspace, stream_relative};
+use super::{Described, FileDiff, Workspace, stream_relative};
 use crate::fsutil::{remove_file, set_read_only};
 use crate::progress::Phase;
 use crate::{Connection, ContentCache, Error, Result};
@@ -62,9 +62,34 @@ impl Workspace {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => return Err(e.into()),
             };
-            if old != new {
-                diffs.push(FileDiff { path, old, new });
+            if old == new {
+                continue;
             }
+            let described = match self.file_type(&path).differ {
+                Some(differ) => {
+                    let rel = self.stream_relative(&path);
+                    let text = crate::plugins::describe_bytes(
+                        conn,
+                        cache,
+                        &differ,
+                        &rel,
+                        old.as_deref(),
+                        new.as_deref(),
+                    )
+                    .await;
+                    Some(Described {
+                        by: differ,
+                        text: text.map_err(|e| e.to_string()),
+                    })
+                }
+                None => None,
+            };
+            diffs.push(FileDiff {
+                path,
+                old,
+                new,
+                described,
+            });
         }
         Ok(diffs)
     }

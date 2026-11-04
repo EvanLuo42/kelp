@@ -1660,6 +1660,7 @@ dependencies = [
  "kelp-proto",
  "kelp-workspace",
  "rpassword",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-appender",

@@ -30,7 +30,7 @@ pub(crate) use submit::PARALLEL_INGESTS;
 
 pub use merge::MergeReport;
 pub use resolve::{ResolveMode, ResolveOutcome};
-pub use snapshot::{FileDiff, SnapshotSide, render_diff};
+pub use snapshot::{Described, FileDiff, SnapshotSide, render_diff};
 pub use sync::{SkipReason, SyncReport};
 
 use crate::fsutil::{content_of, entry_matches, file_matches};

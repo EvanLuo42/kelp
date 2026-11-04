@@ -30,6 +30,7 @@ kelp-daemon.workspace = true
 kelp-proto.workspace = true
 kelp-workspace.workspace = true
 rpassword.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
