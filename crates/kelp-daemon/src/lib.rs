@@ -23,6 +23,9 @@ use kelp_proto::io::{expect_frame, write_message};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Notify;
 
+/// How long to wait after failing to accept a connection.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
 /// Settings for [`serve`].
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -95,7 +98,17 @@ pub async fn serve(config: Config) -> io::Result<()> {
         };
         tokio::select! {
             stream = listener.accept() => {
-                let stream = stream?;
+                let stream = match stream {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        // Running out of file descriptors, or a client that
+                        // went away before it was accepted, must not stop
+                        // kelpd; waiting a little lets descriptors free up.
+                        tracing::warn!("cannot accept a connection: {e}");
+                        tokio::time::sleep(ACCEPT_BACKOFF).await;
+                        continue;
+                    }
+                };
                 let daemon = daemon.clone();
                 daemon.touch();
                 daemon.in_flight.fetch_add(1, Ordering::SeqCst);
@@ -132,12 +145,17 @@ async fn handle(
     let cwd = request.cwd.clone();
     tracing::debug!(cwd = %cwd.display(), op = ?request.op, "request");
     let started = Instant::now();
-    let reply = if request.version != VERSION {
-        tracing::info!(client = %request.version, "client version differs");
-        IpcReply::VersionMismatch(VERSION.to_owned())
-    } else if request.op == Op::Shutdown {
+    // Shutdown comes before the version check, so that a client of another
+    // version can replace this kelpd with its own.
+    let reply = if request.op == Op::Shutdown {
+        if request.version != VERSION {
+            tracing::info!(client = %request.version, "stopping for a client of another version");
+        }
         daemon.shutdown.notify_one();
         IpcReply::Ok(kelp_client::ops::Outcome::Done)
+    } else if request.version != VERSION {
+        tracing::info!(client = %request.version, "client version differs");
+        IpcReply::VersionMismatch(VERSION.to_owned())
     } else if let Op::Mount { upper } = &request.op {
         let (daemon, root, upper) = (daemon.clone(), request.cwd.clone(), upper.clone());
         match tokio::task::spawn_blocking(move || daemon.mounts.mount(&root, &upper)).await {
@@ -245,6 +263,9 @@ async fn status(
 struct Listener {
     inner: tokio::net::UnixListener,
     path: PathBuf,
+    /// Locked for as long as this kelpd serves the home, so that two kelpd
+    /// starting at once cannot both replace the socket.
+    _lock: std::fs::File,
 }
 
 #[cfg(unix)]
@@ -252,6 +273,22 @@ impl Listener {
     async fn bind(home: &Home) -> io::Result<Self> {
         use std::os::unix::fs::PermissionsExt;
         let path = home.daemon_socket();
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(home.dir().join("kelpd.lock"))?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    "kelpd is already running",
+                ));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        }
+        // A kelpd from before the lock does not take it, but answers.
         if kelp_client::ipc::connect(home).await.is_ok() {
             return Err(io::Error::new(
                 io::ErrorKind::AddrInUse,
@@ -261,7 +298,11 @@ impl Listener {
         let _ = std::fs::remove_file(&path);
         let inner = tokio::net::UnixListener::bind(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(Self { inner, path })
+        Ok(Self {
+            inner,
+            path,
+            _lock: lock,
+        })
     }
 
     async fn accept(&mut self) -> io::Result<tokio::net::UnixStream> {
@@ -292,9 +333,15 @@ impl Listener {
 
     async fn accept(&mut self) -> io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
         use tokio::net::windows::named_pipe::ServerOptions;
-        self.next.connect().await?;
+        let connected = self.next.connect().await;
+        // Either way this instance is used up: a connected one goes to the
+        // caller, and one whose client left before it was accepted (failing
+        // with ERROR_NO_DATA) cannot take another. The fresh instance is
+        // created first, so that the pipe never has none and no other kelpd
+        // can take the name meanwhile.
         let fresh = ServerOptions::new().create(&self.name)?;
-        Ok(std::mem::replace(&mut self.next, fresh))
+        let used = std::mem::replace(&mut self.next, fresh);
+        connected.map(|()| used)
     }
 
     fn close(self) {}
