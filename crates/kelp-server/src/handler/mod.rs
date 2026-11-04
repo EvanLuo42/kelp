@@ -18,7 +18,7 @@ use kelp_core::DepotPath;
 use kelp_meta::acl::{Level, Protections, Subject};
 use kelp_meta::db::Reader;
 use kelp_meta::record::User;
-use kelp_proto::io::{expect_frame, write_message};
+use kelp_proto::io::{expect_frame_within, write_message};
 use kelp_proto::{
     Auth, Capabilities, ErrorKind, ErrorReply, Hello, MsgType, PROTOCOL_VERSION, Reply, Request,
     RequestClass, Welcome,
@@ -45,9 +45,19 @@ pub(crate) struct Session {
     token: Mutex<Option<String>>,
     /// An edge's connection to the commit server as this client's user.
     upstream: tokio::sync::Mutex<Option<Connection>>,
+    /// Whether the peer is a member of this server's commit group, shown by
+    /// a Raft message with the group's secret.
+    member: std::sync::atomic::AtomicBool,
 }
 
 impl Session {
+    /// Returns `true` if the peer may send messages larger than a frame:
+    /// it has logged in or shown that it is a member of the commit group.
+    fn trusted(&self) -> bool {
+        self.member.load(std::sync::atomic::Ordering::Relaxed)
+            || self.user.lock().expect("session lock").is_some()
+    }
+
     fn user(&self) -> Result<User, ErrorReply> {
         self.user
             .lock()
@@ -191,7 +201,13 @@ async fn serve_stream(
     mut send: SendStream,
     mut recv: RecvStream,
 ) -> kelp_proto::Result<()> {
-    let frame = expect_frame(&mut recv).await?;
+    // Only a known peer may make the server hold a message larger than a
+    // frame.
+    let limit = match session.trusted() {
+        true => kelp_proto::MAX_MESSAGE,
+        false => kelp_proto::MAX_PAYLOAD,
+    };
+    let frame = expect_frame_within(&mut recv, limit).await?;
     let response = match frame.header.msg_type {
         MsgType::Hello => {
             let hello: Hello = frame.decode()?;
@@ -376,9 +392,11 @@ async fn handle_once(
         let cluster = state.cluster().ok_or_else(|| {
             ErrorReply::new(ErrorKind::Forbidden, "this server is not in a commit group")
         })?;
-        return Ok(Reply::Raft(
-            cluster.serve(secret, *format, *rpc, payload).await?,
-        ));
+        let reply = cluster.serve(secret, *format, *rpc, payload).await?;
+        session
+            .member
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        return Ok(Reply::Raft(reply));
     }
     if let Some(edge) = state.edge() {
         edge.check()?;

@@ -106,6 +106,7 @@ impl Peer {
         Resp: DeserializeOwned,
         E: DeserializeOwned,
     {
+        let payload = postcard::to_allocvec(request).expect("raft messages serialize");
         let conn = match self.conn.as_ref().filter(|c| !c.is_closed()) {
             Some(c) => c.clone(),
             None => {
@@ -113,6 +114,20 @@ impl Peer {
                 let c = Connection::connect(&self.addr, trust, Auth::None)
                     .await
                     .map_err(|e| CallError::Unreachable(Unreachable::new(&e)))?;
+                // A member accepts a message larger than a frame only on a
+                // connection that has shown the group's secret, so introduce
+                // this one with a small message first.
+                if payload.len() > MAX_MESSAGE {
+                    let probe = Request::Raft {
+                        secret: self.secret.clone(),
+                        format: kelp_meta::db::FORMAT_VERSION,
+                        rpc: RaftRpc::Probe,
+                        payload: postcard::to_allocvec(&()).expect("unit serializes"),
+                    };
+                    c.call(&probe)
+                        .await
+                        .map_err(|e| CallError::Unreachable(Unreachable::new(&e)))?;
+                }
                 self.conn = Some(c.clone());
                 c
             }
@@ -121,7 +136,7 @@ impl Peer {
             secret: self.secret.clone(),
             format: kelp_meta::db::FORMAT_VERSION,
             rpc,
-            payload: postcard::to_allocvec(request).expect("raft messages serialize"),
+            payload,
         };
         let reply = match conn.call(&request).await {
             Ok(Reply::Raft(bytes)) => bytes,

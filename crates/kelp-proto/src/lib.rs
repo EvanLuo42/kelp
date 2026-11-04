@@ -14,7 +14,7 @@ pub mod io;
 pub mod message;
 pub mod rpc;
 
-pub use frame::{Flags, FrameHeader, HEADER_LEN, MAX_PAYLOAD};
+pub use frame::{Flags, FrameHeader, HEADER_LEN, MAX_MESSAGE, MAX_PAYLOAD};
 pub use message::{Auth, Capabilities, Hello, MsgType, ServerRole, Welcome};
 pub use rpc::{ErrorKind, ErrorReply, Reply, Request, RequestClass};
 
@@ -36,7 +36,7 @@ pub enum Error {
     /// The frame uses a header layout this build does not understand.
     #[error("unsupported frame version {0}")]
     UnsupportedFrameVersion(u8),
-    /// The declared payload length exceeds [`MAX_PAYLOAD`].
+    /// A frame exceeds [`MAX_PAYLOAD`], or a message the limit for it.
     #[error("payload of {0} bytes exceeds limit")]
     PayloadTooLarge(u32),
     /// The header names a message type this build does not know.
