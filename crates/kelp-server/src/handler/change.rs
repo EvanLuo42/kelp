@@ -9,8 +9,8 @@ use kelp_meta::{
     Submission,
 };
 use kelp_proto::rpc::{
-    ChangeDetail, ChangeSummary, FileInfo, LockInfo, RevisionInfo, ShelfInfo, SubmitAction,
-    SubmitChange,
+    ChangeDetail, ChangeSummary, FileInfo, LockInfo, RevisionInfo, ShelfInfo, ShelfSummary,
+    SubmitAction, SubmitChange,
 };
 use kelp_proto::{ErrorKind, ErrorReply, Reply};
 
@@ -319,6 +319,53 @@ pub(super) async fn shelve(
         Outcome::Shelved { cl } => Ok(Reply::Shelved { cl: cl.0 }),
         _ => Err(internal("shelving produced no shelf")),
     }
+}
+
+/// Lists the shelves with files the user can read, newest first.
+pub(super) fn list_shelves(
+    state: &State,
+    access: &Access,
+    stream: Option<String>,
+    owner: Option<String>,
+    limit: u32,
+) -> Response {
+    let stream = stream.as_deref().map(parse_path).transpose()?;
+    let reader = state.reader()?;
+    let shelves = reader
+        .shelves(limit as usize, |s| {
+            let c = &s.contents;
+            stream.as_ref().is_none_or(|p| c.stream == *p)
+                && owner
+                    .as_deref()
+                    .is_none_or(|o| c.owner.eq_ignore_ascii_case(o))
+                && access.sees(&c.stream)
+                && c.files.iter().any(|f| access.can(Level::Read, &f.path))
+        })
+        .map_err(meta_error)?;
+    let mut out = Vec::with_capacity(shelves.len());
+    for shelf in shelves {
+        let c = shelf.contents;
+        let files = c
+            .files
+            .iter()
+            .filter(|f| access.can(Level::Read, &f.path))
+            .count();
+        let owner_name = reader
+            .profile_of(&c.owner)
+            .map_err(meta_error)?
+            .display_name;
+        out.push(ShelfSummary {
+            cl: shelf.number.0,
+            stream: c.stream.to_string(),
+            owner: c.owner,
+            owner_name,
+            workspace: c.workspace,
+            description: c.description,
+            files: u32::try_from(files).unwrap_or(u32::MAX),
+            at: c.at,
+        });
+    }
+    Ok(Reply::Shelves(out))
 }
 
 pub(super) fn get_shelf(state: &State, access: &Access, cl: u64) -> Response {

@@ -68,7 +68,8 @@ pub(super) async fn dispatch(
         | Request::ListLocks { .. }
         | Request::Shelve { .. }
         | Request::GetShelf { .. }
-        | Request::DeleteShelf { .. }) => changes(state, access, r).await,
+        | Request::DeleteShelf { .. }
+        | Request::ListShelves { .. }) => changes(state, access, r).await,
         r @ (Request::ClusterStatus
         | Request::Gc { .. }
         | Request::Obliterate { .. }
@@ -281,6 +282,11 @@ async fn changes(state: &Arc<State>, access: Access, request: Request) -> Respon
         } => change::shelve(state, &access, shelf, stream, workspace, description, files).await,
         Request::GetShelf { cl } => change::get_shelf(state, &access, cl),
         Request::DeleteShelf { cl } => change::delete_shelf(state, &access, cl).await,
+        Request::ListShelves {
+            stream,
+            owner,
+            limit,
+        } => change::list_shelves(state, &access, stream, owner, limit),
         _ => unreachable!("dispatched by area"),
     }
 }

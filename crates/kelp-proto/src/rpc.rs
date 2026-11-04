@@ -490,6 +490,14 @@ pub enum Request {
         /// The encoded request of `rpc`.
         payload: Vec<u8>,
     },
+    /// Lists the shelves with files the user can read, newest first: those of
+    /// `stream` and of `owner` if given, at most `limit` of them, or all if
+    /// `limit` is 0.
+    ListShelves {
+        stream: Option<String>,
+        owner: Option<String>,
+        limit: u32,
+    },
     /// Downloads chunks `ids`, each a chunk of the manifest of one of
     /// `contents`, sent as [`MsgType::Chunk`](crate::MsgType::Chunk) frames
     /// before the reply.
@@ -585,6 +593,7 @@ impl Request {
             | Self::GetChunks { .. }
             | Self::GetManifests { .. }
             | Self::GetContentChunks { .. }
+            | Self::ListShelves { .. }
             | Self::Filelog { .. }
             | Self::Changes { .. }
             | Self::Describe { .. }
@@ -712,6 +721,7 @@ impl Request {
             Self::SetDisabled { .. } => "SetDisabled",
             Self::EditProfile { .. } => "EditProfile",
             Self::Raft { .. } => "Raft",
+            Self::ListShelves { .. } => "ListShelves",
             Self::GetContentChunks { .. } => "GetContentChunks",
         }
     }
@@ -837,6 +847,7 @@ pub enum Reply {
     Users(Vec<UserInfo>),
     Label(LabelInfo),
     Labels(Vec<LabelInfo>),
+    Shelves(Vec<ShelfSummary>),
 }
 
 /// A name for a stream as of a changelist.
@@ -1260,4 +1271,20 @@ pub struct ArtifactInfo {
     /// Milliseconds since the Unix epoch.
     pub at: u64,
     pub pinned: bool,
+}
+
+/// A shelf as listed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShelfSummary {
+    pub cl: u64,
+    pub stream: String,
+    pub owner: String,
+    /// The owner's display name, if they set one.
+    pub owner_name: Option<String>,
+    pub workspace: String,
+    pub description: String,
+    /// The number of shelved files the user may read.
+    pub files: u32,
+    /// When the files were shelved, in milliseconds since the Unix epoch.
+    pub at: u64,
 }

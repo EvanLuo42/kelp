@@ -356,6 +356,27 @@ impl Reader {
             .transpose()
     }
 
+    /// Returns the shelves for which `keep` holds, newest first, stopping
+    /// after `limit` of them unless it is 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Db`] or [`Error::CorruptRecord`] if the table cannot be read.
+    pub fn shelves(&self, limit: usize, keep: impl Fn(&Shelf) -> bool) -> Result<Vec<Shelf>> {
+        let shelves = self.txn.open_table(SHELVES)?;
+        let mut out = Vec::new();
+        for row in shelves.iter()?.rev() {
+            let shelf: Shelf = dec("shelves", row?.1.value())?;
+            if keep(&shelf) {
+                out.push(shelf);
+                if out.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Returns all locks in `domain`, ordered by folded path.
     ///
     /// # Errors

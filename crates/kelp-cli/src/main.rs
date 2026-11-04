@@ -284,6 +284,17 @@ enum Cmd {
     },
     /// Deletes a shelf.
     DeleteShelf { shelf: u64 },
+    /// Lists shelves, newest first.
+    Shelves {
+        /// Limits the list to one stream.
+        #[arg(short, long)]
+        stream: Option<String>,
+        /// Limits the list to the shelves of one user.
+        #[arg(short, long)]
+        user: Option<String>,
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: u32,
+    },
     /// Merges another stream into a new changelist.
     ///
     /// The source defaults to the parent stream.

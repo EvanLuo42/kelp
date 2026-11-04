@@ -224,6 +224,70 @@ async fn content_is_read_only_through_paths_the_user_can_read() {
 }
 
 #[tokio::test]
+async fn shelves_are_listed_newest_first_for_streams_one_can_see() {
+    let server = TestServer::start().await;
+    server.create_depot("game").await;
+    server.create_depot("secret").await;
+    let (alice, bob) = (server.add_user("alice").await, server.add_user("bob").await);
+    server
+        .admin(Request::SetProtections {
+            source: "write * //...\nnone user:bob //secret/...\n".into(),
+        })
+        .await;
+    let client = TestClient::new();
+    for (stream, file) in [
+        ("//game/main", "a.txt"),
+        ("//secret/main", "s.txt"),
+        ("//game/main", "b.txt"),
+    ] {
+        let name = format!(
+            "ws{}",
+            file.len() + stream.len() + usize::from(file == "b.txt")
+        );
+        let mut ws = client.create_workspace(&server, &name, &depot_path(stream));
+        client.sandbox().write(&format!("{name}/{file}"), "x");
+        ws.reconcile(&alice).await.unwrap();
+        ws.shelve(&alice, &client.cache(), LocalClId::DEFAULT)
+            .await
+            .unwrap();
+    }
+    let list = |conn: Connection, stream: Option<&str>, owner: Option<&str>, limit| {
+        let request = Request::ListShelves {
+            stream: stream.map(str::to_owned),
+            owner: owner.map(str::to_owned),
+            limit,
+        };
+        async move {
+            let Reply::Shelves(s) = conn.call(&request).await.unwrap() else {
+                panic!("expected shelves");
+            };
+            s.into_iter()
+                .map(|s| (s.stream, s.files))
+                .collect::<Vec<_>>()
+        }
+    };
+    let game = ("//game/main".to_owned(), 1);
+    let secret = ("//secret/main".to_owned(), 1);
+    assert_eq!(
+        list(alice.clone(), None, None, 0).await,
+        [game.clone(), secret, game.clone()]
+    );
+    assert_eq!(
+        list(bob.clone(), None, None, 0).await,
+        [game.clone(), game.clone()]
+    );
+    assert_eq!(
+        list(bob.clone(), None, None, 1).await,
+        std::slice::from_ref(&game)
+    );
+    assert_eq!(list(bob.clone(), None, Some("bob"), 0).await, []);
+    assert_eq!(
+        list(alice, Some("//game/main"), Some("ALICE"), 0).await,
+        [game.clone(), game]
+    );
+}
+
+#[tokio::test]
 async fn depot_administrators_and_roles_hold_part_of_the_powers() {
     let server = TestServer::start().await;
     server.create_depot("game").await;
