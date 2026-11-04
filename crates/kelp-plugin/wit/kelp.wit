@@ -54,7 +54,8 @@ world differ {
 world trigger {
     use types.{change, verdict};
     /// Returns the new content of a file of the change, or none if the file
-    /// is deleted or not part of the change.
+    /// is deleted, not part of the change, or larger than the host lets
+    /// plugins read. Reading costs fuel for each byte.
     import read-file: func(path: string) -> option<list<u8>>;
     export pre-submit: func(stream-path: string, author: string, description: string, changes: list<change>) -> verdict;
 }

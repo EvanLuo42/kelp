@@ -95,6 +95,7 @@ fn plugins_are_bounded_and_validated() {
     let tight = Host::new(Limits {
         fuel: 1_000,
         memory: 64 << 20,
+        ..Limits::default()
     })
     .unwrap();
     let chunker = tight.load(&plugin("fixed-chunker")).unwrap();
@@ -103,4 +104,54 @@ fn plugins_are_bounded_and_validated() {
         Err(Error::Trap(_))
     ));
     assert!(matches!(host().load(b"not wasm"), Err(Error::Invalid(_))));
+}
+
+fn judge_large_file(limits: Limits, declared: u64) -> kelp_plugin::Result<Verdict> {
+    let host = Host::new(limits).unwrap();
+    let trigger = host.load(&plugin("todo-trigger")).unwrap();
+    let changes = vec![Change {
+        path: "Content/big.bin".into(),
+        action: "edit".into(),
+        size: declared,
+    }];
+    // The marker comes first, so that finding it costs the plugin little.
+    let mut content = b"DO NOT SUBMIT".to_vec();
+    content.resize(1 << 20, b'x');
+    trigger.pre_submit(&host, "//game/main", "alice", "fix #1", &changes, move |_| {
+        Some(content.clone())
+    })
+}
+
+#[test]
+fn reading_files_is_bounded() {
+    let size = 1 << 20;
+    assert!(matches!(
+        judge_large_file(Limits::default(), size),
+        Ok(Verdict::Reject(_))
+    ));
+    // A file over the limit reads as none, whether its declared size or
+    // its content gives it away.
+    let small = Limits {
+        read_file: 1 << 10,
+        ..Limits::default()
+    };
+    assert_eq!(judge_large_file(small, size).unwrap(), Verdict::Accept);
+    assert_eq!(judge_large_file(small, 10).unwrap(), Verdict::Accept);
+    // Reading costs fuel for every byte.
+    let frugal = Limits {
+        fuel: kelp_plugin::READ_FUEL_PER_BYTE * size / 2,
+        ..Limits::default()
+    };
+    assert!(matches!(
+        judge_large_file(frugal, size),
+        Err(Error::Trap(_))
+    ));
+    let enough = Limits {
+        fuel: kelp_plugin::READ_FUEL_PER_BYTE * size * 2,
+        ..Limits::default()
+    };
+    assert!(matches!(
+        judge_large_file(enough, size),
+        Ok(Verdict::Reject(_))
+    ));
 }
