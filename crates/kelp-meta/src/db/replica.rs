@@ -61,7 +61,7 @@ impl MetaDb {
         }
         let cmd: Command = postcard::from_bytes(&entry.command)
             .map_err(|_| Error::Invalid(format!("log entry {} is corrupt", entry.index)))?;
-        apply::apply(&txn, &cmd, Origin::Replicated)?;
+        apply::apply(&txn, &cmd, Origin::Replicated, &entry.actor)?;
         append_log(&txn, &cmd, &entry.actor, Origin::Replicated)?;
         let hash = match txn.open_table(AUDIT)?.get(entry.index)? {
             Some(v) => dec::<AuditEntry>("audit", v.value())?.hash,

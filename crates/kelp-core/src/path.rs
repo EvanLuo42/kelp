@@ -1,8 +1,8 @@
 //! Depot paths of the form `//depot/stream/dir/file.ext`.
 //!
 //! Paths preserve their original spelling but compare by a folded key (NFC
-//! normalization followed by lowercasing), so two paths that differ only in
-//! case or Unicode normalization can never coexist on the server.
+//! normalization followed by simple case folding), so two paths that differ
+//! only in case or Unicode normalization can never coexist on the server.
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -33,10 +33,31 @@ const WINDOWS_RESERVED: &[&str] = &[
 /// assert_eq!(a, b);
 /// assert_eq!(a.as_str(), "//Game/Main/Hero.PNG");
 /// ```
-#[derive(Clone, Serialize, Deserialize)]
+///
+/// Deserializing validates the path like [`parse`](Self::parse) and
+/// recomputes the key, so a key stored by an older version, which folded
+/// differently, is never trusted.
+#[derive(Clone, Serialize)]
 pub struct DepotPath {
     original: String,
     key: String,
+}
+
+impl<'de> Deserialize<'de> for DepotPath {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        /// The serialized form; the key is recomputed rather than trusted.
+        #[derive(Deserialize)]
+        #[serde(rename = "DepotPath")]
+        struct Stored {
+            original: String,
+            #[serde(rename = "key")]
+            _key: String,
+        }
+        let stored = Stored::deserialize(deserializer)?;
+        Self::parse(&stored.original).map_err(serde::de::Error::custom)
+    }
 }
 
 impl DepotPath {
@@ -103,7 +124,7 @@ impl DepotPath {
 
     /// Returns an iterator over the `/`-separated segments, without the leading `//`.
     pub fn segments(&self) -> impl Iterator<Item = &str> {
-        self.original[2..].split('/')
+        self.original.get(2..).unwrap_or_default().split('/')
     }
 
     /// Returns the last segment.
@@ -132,16 +153,53 @@ impl DepotPath {
     }
 }
 
-/// Returns the case-folded form of a name or path, NFC-normalized and then
-/// lowercased, which is how depot paths, tree entries and locks compare.
+/// Returns the case-folded form of a name or path, which is how depot paths,
+/// tree entries and locks compare.
+///
+/// The input is NFC-normalized and then folded one character at a time,
+/// without regard to context: a character maps to the lowercase form of its
+/// uppercase form when both are single characters, so variants that file
+/// systems treat as one letter, such as `σ`, `ς` and `Σ`, or `µ` and `μ`,
+/// fold alike. Other characters are lowercased, and nothing expands into
+/// several letters that it did not already lowercase to, so `ß` stays `ß`.
+/// The dotless `ı` stays apart from `i`.
+///
+/// Folding is idempotent: `fold(&fold(s)) == fold(s)`.
 ///
 /// # Examples
 ///
 /// ```
-/// assert_eq!(kelp_core::path::fold("Content/Hero.PNG"), "content/hero.png");
+/// use kelp_core::path::fold;
+///
+/// assert_eq!(fold("Content/Hero.PNG"), "content/hero.png");
+/// assert_eq!(fold("ΑΣ"), fold("ασ"));
+/// assert_eq!(fold("ας"), fold("ασ"));
 /// ```
 pub fn fold(s: &str) -> String {
-    s.nfc().collect::<String>().to_lowercase()
+    let mut out = String::with_capacity(s.len());
+    for c in s.nfc() {
+        fold_char(c, &mut out);
+    }
+    out
+}
+
+fn fold_char(c: char, out: &mut String) {
+    if c.is_ascii() {
+        out.push(c.to_ascii_lowercase());
+        return;
+    }
+    // Simple case folding keeps the dotless i apart from i.
+    if c != '\u{131}' {
+        let mut upper = c.to_uppercase();
+        if let (Some(u), None) = (upper.next(), upper.next()) {
+            let mut lower = u.to_lowercase();
+            if let (Some(l), None) = (lower.next(), lower.next()) {
+                out.push(l);
+                return;
+            }
+        }
+    }
+    out.extend(c.to_lowercase());
 }
 
 fn validate_segment(segment: &str) -> std::result::Result<(), &'static str> {

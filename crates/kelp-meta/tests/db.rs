@@ -136,4 +136,29 @@ fn shelves_share_changelist_numbers() {
     );
     f.db().commit(Command::DeleteShelf { cl: shelf }).unwrap();
     assert!(f.db().read().unwrap().shelf(shelf).unwrap().is_none());
+
+    // Replacing a shelf that does not exist fails, even under the number
+    // the next shelf would get.
+    let mut contents = updated_contents(&f);
+    for missing in [shelf, ClNumber(cl3.0 + 1), ClNumber(cl3.0 + 5)] {
+        contents.description = format!("replace {missing}");
+        let replaced = f.db().shelve(Some(missing), contents.clone());
+        assert!(
+            matches!(replaced, Err(Error::NotFound(_))),
+            "{missing}: {replaced:?}"
+        );
+    }
+    let next = f.db().shelve(None, contents).unwrap();
+    assert_eq!(next, ClNumber(cl3.0 + 1), "no number was used up");
+}
+
+fn updated_contents(f: &MetaFixture) -> kelp_meta::ShelfContents {
+    kelp_meta::ShelfContents {
+        stream: p("//game/main"),
+        owner: "alice".into(),
+        workspace: "ws".into(),
+        description: "wip".into(),
+        files: vec![f.edit("//game/main/a.txt", b"a", b"b")],
+        at: 4,
+    }
 }

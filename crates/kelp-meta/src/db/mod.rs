@@ -12,6 +12,7 @@ mod nodes;
 mod obliterate;
 mod proposal;
 mod reader;
+mod refold;
 mod replica;
 mod snapshot;
 mod streams;
@@ -81,6 +82,7 @@ const LABELS: TableDefinition<&str, Bytes> = TableDefinition::new("labels");
 const PROFILES: TableDefinition<&str, Bytes> = TableDefinition::new("profiles");
 const EMAIL_OWNERS: TableDefinition<&str, &str> = TableDefinition::new("email_owners");
 const MOVES: TableDefinition<(&str, u64), Bytes> = TableDefinition::new("moves");
+const STREAM_OWNERS: TableDefinition<&str, &str> = TableDefinition::new("stream_owners");
 
 const LAST_INDEX: &str = "last_index";
 const FORMAT: &str = "format_version";
@@ -92,7 +94,7 @@ const FORMAT: &str = "format_version";
 /// Logged commands are kept as they were encoded, so a change to
 /// [`Command`] also needs a migration that re-encodes the log; edges only
 /// replicate from a commit server with the same format.
-pub const FORMAT_VERSION: u64 = 9;
+pub const FORMAT_VERSION: u64 = 10;
 
 /// Converts a database from one format version to the next.
 type Migration = fn(&WriteTransaction) -> Result<()>;
@@ -116,8 +118,18 @@ const MIGRATIONS: &[Migration] = &[
     |_| Ok(()),
     // 9 adds user profiles and the owners of their addresses, likewise.
     |_| Ok(()),
+    // 10 folds names one character at a time, so keys with a final sigma
+    // and similar letters change; drops the views deleted streams left
+    // behind; and records who created each stream, from the log.
+    |txn| {
+        refold::refold(txn)?;
+        streams::replay_stream_lives(txn)
+    },
 ];
 const NEXT_CL: &str = "next_cl";
+/// The next changelist number as of the last obliterate, which rewrites the
+/// trees of earlier changelists.
+const OBLITERATED: &str = "obliterated_at";
 const PROTECTIONS: &str = "protections";
 const REVIEW_RULES: &str = "review_rules";
 
@@ -224,6 +236,7 @@ impl MetaDb {
         txn.open_table(MOVES)?;
         txn.open_table(PROFILES)?;
         txn.open_table(EMAIL_OWNERS)?;
+        txn.open_table(STREAM_OWNERS)?;
         txn.commit()?;
         Ok(Self { db })
     }

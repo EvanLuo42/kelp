@@ -9,8 +9,8 @@ use redb::{ReadableTable, ReadableTableMetadata};
 
 use super::nodes::TxnNodes;
 use super::{
-    ARTIFACTS, AUDIT, Bytes, CHANGES, LOG, MANIFESTS, MetaDb, NODES, REVISIONS, Reader, SHELVES,
-    STREAM_ROOTS, STREAMS, VIEWS, audit_hash, dec,
+    ARTIFACTS, AUDIT, Bytes, CHANGES, LOG, MANIFESTS, META, MetaDb, NODES, OBLITERATED, REVISIONS,
+    Reader, SHELVES, STREAM_ROOTS, STREAMS, VIEWS, audit_hash, dec,
 };
 use crate::record::{Artifact, AuditEntry, Changelist, Revision, Shelf, Stream};
 use crate::{Dirs, Error, Result};
@@ -208,18 +208,29 @@ impl MetaDb {
     /// changelist `marked_through`, nor reachable from a changelist submitted
     /// or a stream changed since. Returns the number deleted.
     ///
+    /// An obliterate rewrites the trees of earlier changelists too. If one
+    /// may have happened since the marking, every tree is marked again
+    /// here, so nothing it wrote is lost.
+    ///
     /// # Errors
     ///
     /// Returns an error if a node cannot be read or the transaction fails.
     pub fn sweep_nodes(&self, live: &HashSet<NodeId>, marked_through: ClNumber) -> Result<u64> {
         let txn = self.db.begin_write()?;
+        // An obliterate after the marking saw at least the next number
+        // after everything the marking saw.
+        let obliterated = txn
+            .open_table(META)?
+            .get(OBLITERATED)?
+            .map_or(0, |v| v.value());
+        let since = (obliterated <= marked_through.0).then_some(marked_through);
         let recent = {
             let (roots, _) = tree_roots(
                 &txn.open_table(CHANGES)?,
                 &txn.open_table(STREAMS)?,
                 &txn.open_table(ARTIFACTS)?,
                 [&txn.open_table(STREAM_ROOTS)?, &txn.open_table(VIEWS)?],
-                Some(marked_through),
+                since,
             )?;
             let nodes = TxnNodes::new(&txn)?;
             let dirs = Dirs::new(&nodes);
