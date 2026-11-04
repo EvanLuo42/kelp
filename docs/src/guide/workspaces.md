@@ -96,13 +96,19 @@ The discarded changes are not kept anywhere.
 
 `.kelpignore` at the workspace root lists files that are never added.
 Each non-empty line not starting with `#` is a glob.
-A pattern starting with `/` is anchored at the root; any other pattern matches at any depth.
+A pattern with a `/` at the start or in the middle is anchored at the root; any other pattern matches at any depth.
+A trailing `/` makes the pattern match directories only, so `build/` ignores a directory named `build` but not a file of that name.
 A pattern also matches everything below a matching directory.
+A line starting with `!` re-includes paths matched by an earlier line; the last matching line wins.
+As in gitignore, a file cannot be re-included when a parent directory is ignored as a whole, so write `Saved/*` instead of `Saved/` before `!Saved/keep.txt`.
+Use `\!` or `\#` to match a name that starts with `!` or `#`.
 
 ```text
 Intermediate/
-Saved/
+Saved/*
+!Saved/keep.txt
 *.tmp
+!important.tmp
 /build.log
 ```
 

@@ -41,26 +41,57 @@ fn config_and_state_round_trip() {
 fn ignore_rules() {
     let sandbox = Sandbox::new();
     let root = sandbox.dir("ws");
-    assert!(Ignore::load(&root).unwrap().is_ignored(".kelp/state.bin"));
-    assert!(Ignore::load(&root).unwrap().is_ignored(".KELP/state.bin"));
     assert!(
         Ignore::load(&root)
             .unwrap()
-            .is_ignored("Mod/.Kelp/config.toml")
+            .is_ignored(".kelp/state.bin", false)
     );
-    assert!(!Ignore::load(&root).unwrap().is_ignored("Mod/.kelpignore"));
+    assert!(
+        Ignore::load(&root)
+            .unwrap()
+            .is_ignored(".KELP/state.bin", false)
+    );
+    assert!(
+        Ignore::load(&root)
+            .unwrap()
+            .is_ignored("Mod/.Kelp/config.toml", false)
+    );
+    assert!(
+        !Ignore::load(&root)
+            .unwrap()
+            .is_ignored("Mod/.kelpignore", false)
+    );
 
     sandbox.write(
         "ws/.kelpignore",
         "# build output\nIntermediate/\n/Binaries\n*.obj\n",
     );
     let ignore = Ignore::load(&root).unwrap();
-    assert!(ignore.is_ignored("Intermediate/Build/a.o"));
-    assert!(ignore.is_ignored("Plugins/X/Intermediate/a.o"));
-    assert!(ignore.is_ignored("Binaries/editor.exe"));
-    assert!(!ignore.is_ignored("Plugins/X/Binaries/x.dll"));
-    assert!(ignore.is_ignored("Source/main.obj"));
-    assert!(!ignore.is_ignored("Source/main.cpp"));
+    assert!(ignore.is_ignored("Intermediate/Build/a.o", false));
+    assert!(ignore.is_ignored("Plugins/X/Intermediate/a.o", false));
+    assert!(ignore.is_ignored("Binaries/editor.exe", false));
+    assert!(!ignore.is_ignored("Plugins/X/Binaries/x.dll", false));
+    assert!(ignore.is_ignored("Source/main.obj", false));
+    assert!(!ignore.is_ignored("Source/main.cpp", false));
+
+    let ignore = Ignore::parse("*.tmp\n!keep.tmp\nSaved/*\n!Saved/keep.txt\n\\!odd\n!\n").unwrap();
+    assert!(ignore.is_ignored("a.tmp", false));
+    assert!(!ignore.is_ignored("Content/keep.tmp", false));
+    assert!(ignore.is_ignored("Saved/a.txt", false));
+    assert!(!ignore.is_ignored("Saved/keep.txt", false));
+    assert!(ignore.is_ignored("!odd", false));
+    // Order matters: a later pattern overrides an earlier negation.
+    let ignore = Ignore::parse("!keep.tmp\n*.tmp\n").unwrap();
+    assert!(ignore.is_ignored("keep.tmp", false));
+
+    // A middle slash anchors; a trailing slash matches directories only.
+    let ignore = Ignore::parse("docs/*.md\nbuild/\n").unwrap();
+    assert!(ignore.is_ignored("docs/a.md", false));
+    assert!(!ignore.is_ignored("x/docs/a.md", false));
+    assert!(ignore.is_ignored("build", true));
+    assert!(ignore.is_ignored("x/build", true));
+    assert!(!ignore.is_ignored("x/build", false));
+    assert!(ignore.is_ignored("x/build/a.o", false));
 }
 
 #[test]

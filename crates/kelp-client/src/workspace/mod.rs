@@ -555,7 +555,8 @@ impl Workspace {
         let walker = walkdir::WalkDir::new(start).sort_by_file_name().into_iter();
         for entry in walker.filter_entry(|e| {
             let rel = self.relative(e.path());
-            rel.is_empty() || !(ignore.is_ignored(&rel) || self.in_artifact_dir(&rel))
+            rel.is_empty()
+                || !(ignore.is_ignored(&rel, e.file_type().is_dir()) || self.in_artifact_dir(&rel))
         }) {
             let entry = entry.map_err(|e| Error::Io(e.into()))?;
             if entry.file_type().is_file() {

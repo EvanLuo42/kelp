@@ -18,8 +18,12 @@ Only a trailing `...` is supported.
 ## .kelpignore
 
 One glob per line.
-A leading `/` anchors a pattern at the workspace root; otherwise it matches at any depth.
+A pattern with a `/` at the start or in the middle is anchored at the workspace root; otherwise it matches at any depth.
+A trailing `/` makes the pattern match directories only.
 A pattern also matches everything below a matching directory.
+A leading `!` negates the pattern: it re-includes paths ignored by earlier lines, and the last matching line wins.
+A file cannot be re-included when a parent directory is ignored as a whole.
+`\!` and `\#` match names that start with `!` or `#`.
 
 ## Protections
 
