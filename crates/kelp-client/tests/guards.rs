@@ -192,6 +192,39 @@ fn refreshing_the_index_skips_artifact_directories() {
     );
 }
 
+#[test]
+fn refreshing_many_paths_skips_ignored_ones_and_covers_children() {
+    let sandbox = Sandbox::new();
+    let ws = Workspace::create(
+        &sandbox.dir("ws"),
+        Config::new("ws", "localhost:7474", &stream()),
+    )
+    .unwrap();
+    sandbox.write("ws/.kelpignore", "Saved/\n");
+    sandbox.write("ws/keep/a.txt", "a\n");
+    sandbox.write("ws/keep/b.txt", "b\n");
+    let mut index = DiskIndex::scan(&ws).unwrap();
+    let before = index.len();
+    let mut changed = vec![ws.root().join("keep")];
+    for i in 0..200 {
+        let rel = format!("Saved/Logs/{i}.log");
+        sandbox.write(&format!("ws/{rel}"), "x\n");
+        changed.push(ws.root().join(rel));
+    }
+    // Below a path that is refreshed anyway, and deleted since.
+    changed.push(ws.root().join("keep/a.txt"));
+    changed.push(ws.root().join("keep/gone.txt"));
+    sandbox.write("ws/keep/c.txt", "c\n");
+    index.refresh_many(&ws, &changed).unwrap();
+    let listed: Vec<&str> = index.entries().map(|(l, _)| l).collect();
+    assert!(
+        listed.iter().all(|l| !l.starts_with("Saved/")),
+        "{listed:?}"
+    );
+    assert!(listed.contains(&"keep/c.txt"), "{listed:?}");
+    assert_eq!(index.len(), before + 1, "{listed:?}");
+}
+
 #[tokio::test]
 async fn sync_skips_files_that_map_into_kelp_directories() {
     let s = setup(&[("ok.txt", "ok\n")]).await;

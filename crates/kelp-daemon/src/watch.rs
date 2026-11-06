@@ -12,6 +12,9 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 const FENCE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How many changed paths to remember before giving up and rescanning.
+const MAX_PENDING_PATHS: usize = 200_000;
+
 /// Changes reported since the index was last brought up to date.
 #[derive(Default)]
 struct Pending {
@@ -58,11 +61,8 @@ impl Watchers {
         };
         match (&mut watched.index, rescan) {
             (Some(index), false) => {
-                for path in paths {
-                    if index.refresh(ws, &path).is_err() {
-                        watched.index = None;
-                        break;
-                    }
+                if index.refresh_many(ws, paths).is_err() {
+                    watched.index = None;
                 }
             }
             _ => watched.index = None,
@@ -96,9 +96,16 @@ impl Watchers {
                                 pending.fence = pending.fence.max(n);
                             } else if path == ignore_file {
                                 pending.rescan = true;
-                            } else if !path.starts_with(&meta) {
+                            } else if !path.starts_with(&meta) && !pending.rescan {
                                 pending.paths.insert(path);
                             }
+                        }
+                        // A build can report millions of paths between two
+                        // statuses; listing the disk again is cheaper than
+                        // keeping them all.
+                        if pending.paths.len() > MAX_PENDING_PATHS {
+                            pending.paths.clear();
+                            pending.rescan = true;
                         }
                     }
                     Err(_) => pending.rescan = true,

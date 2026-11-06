@@ -503,7 +503,7 @@ impl Workspace {
         stream_relative(&self.stream, path)
     }
 
-    fn abs(&self, local: &str) -> PathBuf {
+    pub(crate) fn abs(&self, local: &str) -> PathBuf {
         if local.is_empty() {
             self.root.clone()
         } else {
@@ -546,7 +546,16 @@ impl Workspace {
     /// Returns the files below the workspace path `local` that the current
     /// `.kelpignore` does not exclude, with their size and modification time.
     pub(crate) fn walk_entries(&self, local: &str) -> Result<Vec<(String, DiskEntry)>> {
-        let ignore = Ignore::load(&self.root)?;
+        self.walk_entries_with(&Ignore::load(&self.root)?, local)
+    }
+
+    /// Like [`walk_entries`](Self::walk_entries) with `ignore` already loaded,
+    /// for callers that walk many paths.
+    pub(crate) fn walk_entries_with(
+        &self,
+        ignore: &Ignore,
+        local: &str,
+    ) -> Result<Vec<(String, DiskEntry)>> {
         let mut files = Vec::new();
         let start = self.abs(local);
         if !start.exists() {

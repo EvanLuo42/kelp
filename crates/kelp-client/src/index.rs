@@ -77,26 +77,88 @@ impl DiskIndex {
     ///
     /// Returns an error if the path exists but cannot be read.
     pub fn refresh(&mut self, ws: &Workspace, abs: &Path) -> Result<()> {
-        let local = ws.relative(abs);
-        if local.is_empty() || is_meta_path(&local) {
-            return Ok(());
+        self.refresh_many(ws, [abs])
+    }
+
+    /// Updates the entries at and below each of `paths`, as
+    /// [`refresh`](Self::refresh) does for one.
+    ///
+    /// Reads the ignore rules once, skips paths they exclude (the index never
+    /// holds any, so a build writing thousands of files into an ignored
+    /// directory costs next to nothing), and skips paths below another one in
+    /// `paths`, which walking that one covers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a path exists but cannot be read.
+    pub fn refresh_many<P: AsRef<Path>>(
+        &mut self,
+        ws: &Workspace,
+        paths: impl IntoIterator<Item = P>,
+    ) -> Result<()> {
+        let mut ignore = None;
+        let mut locals = Vec::new();
+        for abs in paths {
+            let local = ws.relative(abs.as_ref());
+            if local.is_empty() || is_meta_path(&local) {
+                continue;
+            }
+            if ignore.is_none() {
+                ignore = Some(Ignore::load(ws.root())?);
+            }
+            let rules = ignore.as_ref().expect("loaded above");
+            // A path below an ignored directory matches the rule for the
+            // directory's contents even when it is not known to be a directory.
+            if rules.is_ignored(&local, false) || ws.in_artifact_dir(&local) {
+                continue;
+            }
+            locals.push(local);
         }
-        let prefix = format!("{local}/");
-        self.files
-            .retain(|l, _| *l != local && !l.starts_with(&prefix));
-        match std::fs::symlink_metadata(abs) {
-            Ok(meta) if meta.is_file() => {
-                if !(Ignore::load(ws.root())?.is_ignored(&local, false)
-                    || ws.in_artifact_dir(&local))
-                {
+        let Some(ignore) = ignore else {
+            return Ok(());
+        };
+        locals.sort_unstable();
+        locals.dedup();
+        let mut covered: Option<String> = None;
+        for local in locals {
+            if covered
+                .as_ref()
+                .is_some_and(|c| local.starts_with(c.as_str()))
+            {
+                continue;
+            }
+            covered = Some(format!("{local}/"));
+            self.remove_at_and_below(&local);
+            let abs = ws.abs(&local);
+            match std::fs::symlink_metadata(&abs) {
+                Ok(meta) if meta.is_file() => {
                     self.files.insert(local, DiskEntry::of(&meta));
                 }
+                Ok(meta) if meta.is_dir() => {
+                    self.files.extend(ws.walk_entries_with(&ignore, &local)?);
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
             }
-            Ok(meta) if meta.is_dir() => self.files.extend(ws.walk_entries(&local)?),
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
         }
         Ok(())
+    }
+
+    /// Removes the entry for `local` and those below it. The keys below a
+    /// directory are contiguous, so this does not look at the other files.
+    fn remove_at_and_below(&mut self, local: &str) {
+        self.files.remove(local);
+        let prefix = format!("{local}/");
+        let below: Vec<String> = self
+            .files
+            .range(prefix.clone()..)
+            .map(|(l, _)| l)
+            .take_while(|l| l.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for l in below {
+            self.files.remove(&l);
+        }
     }
 }
