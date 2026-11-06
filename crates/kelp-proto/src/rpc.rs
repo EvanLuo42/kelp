@@ -515,6 +515,17 @@ pub enum Request {
         contents: Vec<ContentId>,
         ids: Vec<ChunkId>,
     },
+    /// Lists what is below the stream-relative directory `path` of `stream`,
+    /// depth first. An empty `path` names the stream's root, and a file lists
+    /// only itself.
+    ///
+    /// Entries the user may not read are omitted, as are directories with
+    /// nothing readable.
+    ListDir {
+        stream: String,
+        path: String,
+        options: ListOptions,
+    },
 }
 
 /// What a request does, which decides where it is handled.
@@ -595,6 +606,7 @@ impl Request {
             | Self::ListStreams
             | Self::ResolveStream { .. }
             | Self::DiffTree { .. }
+            | Self::ListDir { .. }
             | Self::GetChunks { .. }
             | Self::GetManifests { .. }
             | Self::GetContentChunks { .. }
@@ -728,6 +740,7 @@ impl Request {
             Self::Raft { .. } => "Raft",
             Self::ListShelves { .. } => "ListShelves",
             Self::GetContentChunks { .. } => "GetContentChunks",
+            Self::ListDir { .. } => "ListDir",
         }
     }
 }
@@ -855,6 +868,7 @@ pub enum Reply {
     Label(LabelInfo),
     Labels(Vec<LabelInfo>),
     Shelves(Vec<ShelfSummary>),
+    DirEntries(Vec<DirEntry>),
 }
 
 /// A name for a stream as of a changelist.
@@ -1133,6 +1147,50 @@ pub struct FileDelta {
     pub path: String,
     pub old: Option<FileInfo>,
     pub new: Option<FileInfo>,
+}
+
+/// What [`Request::ListDir`] lists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListOptions {
+    /// The changelist to list as of; defaults to the head.
+    pub at: Option<u64>,
+    /// How many levels to list, with `1` being the directory's own entries;
+    /// defaults to all of them.
+    pub depth: Option<u32>,
+    /// Lists only directories.
+    pub dirs_only: bool,
+    /// Fills in [`DirEntry::last`], which takes a lookup per file.
+    pub details: bool,
+}
+
+/// An entry of a stream's file tree.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirEntry {
+    /// The stream-relative path.
+    pub path: String,
+    pub kind: DirEntryKind,
+    /// The revision that gave a file its content, if asked for and known.
+    pub last: Option<LastChange>,
+}
+
+/// The revision that gave a file its content.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastChange {
+    pub rev: u32,
+    pub cl: u64,
+    pub author: String,
+    /// The display name of the author, if set.
+    pub author_name: Option<String>,
+    /// Milliseconds since the Unix epoch.
+    pub submitted_at: u64,
+}
+
+/// What a [`DirEntry`] is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DirEntryKind {
+    File(FileInfo),
+    Dir,
+    Symlink { target: String },
 }
 
 /// One file of a submitted changelist.

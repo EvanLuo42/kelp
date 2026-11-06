@@ -51,6 +51,7 @@ pub(super) async fn dispatch(
         | Request::SetImports { .. }
         | Request::ResolveStream { .. }
         | Request::DiffTree { .. }
+        | Request::ListDir { .. }
         | Request::GetIntegration { .. }
         | Request::CopyUp { .. }) => streams(state, access, r).await,
         r @ (Request::HasChunks { .. }
@@ -189,6 +190,11 @@ async fn streams(state: &Arc<State>, access: Access, request: Request) -> Respon
             to,
             paths,
         } => stream::diff_tree(state, access, stream, from, to, paths).await,
+        Request::ListDir {
+            stream,
+            path,
+            options,
+        } => stream::list_dir(state, access, stream, path, options).await,
         Request::GetIntegration { target, source } => {
             stream::integration(state, &access, target, source)
         }

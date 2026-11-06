@@ -1,15 +1,26 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use kelp_core::{ClNumber, DepotPath, TreeId};
 use kelp_meta::acl::Level;
 use kelp_meta::db::{Proposal, Reader};
 use kelp_meta::record::{Import, Stream};
+use kelp_meta::tree::Visible;
 use kelp_meta::{Command, Dirs, EntryKind, StreamKind};
-use kelp_proto::rpc::{FileDelta, FileInfo, ImportInfo, IntegrationInfo, StreamInfo};
+use kelp_proto::rpc::{
+    DirEntry, DirEntryKind, FileDelta, FileInfo, ImportInfo, IntegrationInfo, LastChange,
+    ListOptions, StreamInfo,
+};
 use kelp_proto::{ErrorKind, ErrorReply, Reply};
 
 use super::{Access, Response, blocking, meta_error, not_found, parse_path};
 use crate::State;
+
+/// How many streams up [`last_change`] looks for a file's revisions.
+const MAX_PARENTS: usize = 64;
+
+/// A changelist's author, the author's display name and when it was submitted.
+type ChangeAuthor = (String, Option<String>, u64);
 
 pub(super) async fn create_depot(state: &State, access: &Access, name: String) -> Response {
     access.require_administers(&parse_path(&format!("//{name}"))?)?;
@@ -321,6 +332,179 @@ pub(super) async fn diff_tree(
         Ok(Reply::TreeDiff { changes, lookups })
     })
     .await
+}
+
+pub(super) async fn list_dir(
+    state: &Arc<State>,
+    access: Access,
+    stream: String,
+    path: String,
+    options: ListOptions,
+) -> Response {
+    let stream = parse_path(&stream)?;
+    access.require_stream(&stream)?;
+    let state = state.clone();
+    blocking(move || {
+        let ListOptions {
+            at,
+            depth,
+            dirs_only,
+            details,
+        } = options;
+        let reader = state.reader()?;
+        if reader.stream(&stream).map_err(meta_error)?.is_none() {
+            return Err(not_found(format!("stream {stream}")));
+        }
+        let (_, root) = reader
+            .view_at(&stream, at.map(ClNumber))
+            .map_err(meta_error)?;
+        let real_paths = reader.real_paths().map_err(meta_error)?;
+        let files = |rel: &str| {
+            stream.join(rel).is_ok_and(|p| {
+                real_paths
+                    .real_path(&p)
+                    .is_ok_and(|real| access.can(Level::Read, &p) && access.can(Level::Read, &real))
+            })
+        };
+        let dirs_visible = |rel: &str| stream.join(rel).is_ok_and(|p| access.sees(&p));
+        let visible = Visible {
+            files: &files,
+            dirs: &dirs_visible,
+        };
+        let nodes = reader.nodes().map_err(meta_error)?;
+        let dirs = Dirs::new(&nodes);
+        let mut listed = Vec::new();
+        if path.is_empty() {
+            dirs.list_visible(root, "", depth, &visible, &mut listed)
+                .map_err(meta_error)?;
+        } else {
+            let missing = || not_found(format!("{stream}/{path}"));
+            let entry = dirs.lookup(root, &path).map_err(meta_error)?;
+            match entry.ok_or_else(missing)? {
+                kelp_meta::TreeEntry {
+                    kind: EntryKind::Dir { tree },
+                    ..
+                } => {
+                    if !dirs
+                        .has_visible(tree, &path, &visible)
+                        .map_err(meta_error)?
+                    {
+                        return Err(missing());
+                    }
+                    dirs.list_visible(tree, &format!("{path}/"), depth, &visible, &mut listed)
+                        .map_err(meta_error)?;
+                }
+                entry => {
+                    if !files(&path) {
+                        return Err(missing());
+                    }
+                    let spelled = match path.rsplit_once('/') {
+                        Some((parent, _)) => format!("{parent}/{}", entry.name),
+                        None => entry.name,
+                    };
+                    listed.push((spelled, entry.kind));
+                }
+            }
+        }
+        if dirs_only {
+            listed.retain(|(_, kind)| matches!(kind, EntryKind::Dir { .. }));
+        }
+        let mut authors = HashMap::new();
+        let mut entries = Vec::with_capacity(listed.len());
+        for (path, kind) in listed {
+            let (kind, last) = match kind {
+                EntryKind::File {
+                    content,
+                    size,
+                    executable,
+                } => {
+                    let last = match details {
+                        true => {
+                            let file = stream.join(&path).map_err(super::invalid)?;
+                            let parts = (&reader, &access, &real_paths);
+                            let at = at.map(ClNumber);
+                            last_change(parts, &stream, &file, content, at, &mut authors)?
+                        }
+                        false => None,
+                    };
+                    let info = FileInfo {
+                        content,
+                        size,
+                        executable,
+                    };
+                    (DirEntryKind::File(info), last)
+                }
+                EntryKind::Dir { .. } => (DirEntryKind::Dir, None),
+                EntryKind::Symlink { target } => (DirEntryKind::Symlink { target }, None),
+            };
+            entries.push(DirEntry { path, kind, last });
+        }
+        Ok(Reply::DirEntries(entries))
+    })
+    .await
+}
+
+/// Returns the newest revision, as of changelist `at` if given, that gave the
+/// file `file` of `stream` its `content`.
+///
+/// A file a stream inherited has no revisions of its own there, so this looks
+/// in the streams it branched from too. It gives up at a path the user may not
+/// read, which would show what happened there.
+fn last_change(
+    (reader, access, real_paths): (&Reader, &Access, &kelp_meta::db::RealPaths),
+    stream: &DepotPath,
+    file: &DepotPath,
+    content: kelp_core::ContentId,
+    at: Option<ClNumber>,
+    authors: &mut HashMap<u64, Option<ChangeAuthor>>,
+) -> Result<Option<LastChange>, ErrorReply> {
+    let rel = kelp_meta::db::stream_relative(stream, file).unwrap_or_default();
+    let mut current = Some(stream.clone());
+    // Parents cannot form a cycle, but a corrupt record should not hang a listing.
+    for _ in 0..MAX_PARENTS {
+        let Some(owner) = current else { break };
+        let path = owner.join(&rel).map_err(super::invalid)?;
+        let real = real_paths.real_path(&path).map_err(meta_error)?;
+        if !access.can(Level::Read, &path) || !access.can(Level::Read, &real) {
+            break;
+        }
+        let revisions = reader.revisions(&real).map_err(meta_error)?;
+        let found = revisions
+            .into_iter()
+            .find(|r| at.is_none_or(|at| r.cl <= at) && r.content == Some(content));
+        if let Some(revision) = found {
+            let cl = revision.cl.0;
+            let author = match authors.get(&cl) {
+                Some(author) => author.clone(),
+                None => {
+                    let change = reader.changelist(revision.cl).map_err(meta_error)?;
+                    let author = match change {
+                        Some(c) => {
+                            let profile = reader.profile_of(&c.author).map_err(meta_error)?;
+                            Some((c.author, profile.display_name, c.submitted_at))
+                        }
+                        None => None,
+                    };
+                    authors.insert(cl, author.clone());
+                    author
+                }
+            };
+            return Ok(
+                author.map(|(author, author_name, submitted_at)| LastChange {
+                    rev: revision.rev,
+                    cl,
+                    author,
+                    author_name,
+                    submitted_at,
+                }),
+            );
+        }
+        current = reader
+            .stream(&owner)
+            .map_err(meta_error)?
+            .and_then(|s| s.parent);
+    }
+    Ok(None)
 }
 
 pub(super) fn integration(

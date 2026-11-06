@@ -285,6 +285,20 @@ impl Workspace {
         self.view.to_depot(&local).ok_or(Error::OutsideView(local))
     }
 
+    /// Returns the depot path of a file or directory, which unlike
+    /// [`depot_path_of`](Self::depot_path_of) may be the workspace's root: its
+    /// stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path is outside the workspace view.
+    pub fn depot_dir_of(&self, path: &Path) -> Result<DepotPath> {
+        match self.local_of(path)?.is_empty() {
+            true => Ok(self.stream.clone()),
+            false => self.depot_path_of(path),
+        }
+    }
+
     /// Expands file system paths, which may name directories, into depot paths.
     ///
     /// Directories expand to the tracked and opened files below them, and also

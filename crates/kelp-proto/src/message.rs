@@ -55,6 +55,9 @@ impl Capabilities {
     /// [`GetContentChunks`](crate::Request::GetContentChunks), and holds back
     /// manifests and chunks of content the user may not read.
     pub const CONTENT_ACCESS: Self = Self(1 << 4);
+    /// Listing directories: the server answers
+    /// [`ListDir`](crate::Request::ListDir).
+    pub const LIST_DIR: Self = Self(1 << 5);
 
     /// Returns `true` if all capabilities in `other` are present in `self`.
     pub fn contains(self, other: Self) -> bool {

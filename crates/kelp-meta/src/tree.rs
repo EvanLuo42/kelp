@@ -80,6 +80,15 @@ pub struct PathDiff {
 
 type PathChanges = Vec<(Vec<String>, Option<EntryKind>)>;
 
+/// Which paths [`Dirs::list_visible`] lists.
+pub struct Visible<'a> {
+    /// Whether a file or symlink may be listed.
+    pub files: &'a dyn Fn(&str) -> bool,
+    /// Whether anything below a directory could be listed; a directory is
+    /// listed only if something below it is, and this saves searching it.
+    pub dirs: &'a dyn Fn(&str) -> bool,
+}
+
 /// Directory operations over a [`NodeStore`].
 pub struct Dirs<'s, S: ?Sized> {
     prolly: Prolly<'s, S>,
@@ -229,6 +238,70 @@ impl<'s, S: NodeStore + ?Sized> Dirs<'s, S> {
             .iter()
             .map(|(_, v)| TreeEntry::decode(v))
             .collect()
+    }
+
+    /// Appends the entries below `dir` that are `visible` to `out` depth
+    /// first, with their paths starting with `prefix`, down to `depth` levels
+    /// or all of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Prolly`] if a node cannot be loaded, or
+    /// [`Error::CorruptEntry`] if an entry cannot be decoded.
+    pub fn list_visible(
+        &self,
+        dir: TreeId,
+        prefix: &str,
+        depth: Option<u32>,
+        visible: &Visible<'_>,
+        out: &mut Vec<(String, EntryKind)>,
+    ) -> Result<()> {
+        for entry in self.list(dir)? {
+            let path = format!("{prefix}{}", entry.name);
+            let EntryKind::Dir { tree } = entry.kind else {
+                if (visible.files)(&path) {
+                    out.push((path, entry.kind));
+                }
+                continue;
+            };
+            if !self.has_visible(tree, &path, visible)? {
+                continue;
+            }
+            let below = format!("{path}/");
+            out.push((path, entry.kind));
+            match depth {
+                Some(0 | 1) => {}
+                depth => {
+                    let depth = depth.map(|d| d - 1);
+                    self.list_visible(tree, &below, depth, visible, out)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns `true` if something below the directory `dir`, whose path is
+    /// `path`, may be listed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Prolly`] if a node cannot be loaded, or
+    /// [`Error::CorruptEntry`] if an entry cannot be decoded.
+    pub fn has_visible(&self, dir: TreeId, path: &str, visible: &Visible<'_>) -> Result<bool> {
+        if !(visible.dirs)(path) {
+            return Ok(false);
+        }
+        for entry in self.list(dir)? {
+            let child = format!("{path}/{}", entry.name);
+            let found = match entry.kind {
+                EntryKind::Dir { tree } => self.has_visible(tree, &child, visible)?,
+                _ => (visible.files)(&child),
+            };
+            if found {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Inserts or replaces (`Some`) and removes (`None`) entries of `dir` by name,

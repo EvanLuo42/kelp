@@ -35,6 +35,7 @@ If there is none, the server answers with an `Error` that says which side to upg
 Servers check the version an upstream server or another commit group member accepted in the same way.
 Capabilities are bits.
 `CONTENT_ACCESS` (bit 4) says the server checks read permission on content fetched by its hash, so clients ask for chunks with `GetContentChunks`, naming the content each chunk belongs to.
+`LIST_DIR` (bit 5) says the server answers `ListDir`.
 Without a token, only login requests are allowed.
 
 ## Trust

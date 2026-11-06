@@ -7,6 +7,7 @@
 //! publishes and fetches build artifacts.
 
 pub mod artifact;
+mod browse;
 mod cache;
 mod fsutil;
 mod home;
@@ -18,6 +19,7 @@ pub mod plugins;
 pub mod progress;
 mod workspace;
 
+pub use browse::{entry_label, list_depot, render_tree};
 pub use cache::ContentCache;
 pub use fsutil::is_read_only;
 pub use home::{Credentials, Home, ServerEntry};

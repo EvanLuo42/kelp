@@ -612,6 +612,12 @@ pub async fn run(
                 );
             }
         }
+        Cmd::Ls { path, long, dirs } => {
+            crate::browse::ls(home, cwd, &server()?, path, long, dirs).await?
+        }
+        Cmd::Tree { path, depth, dirs } => {
+            crate::browse::tree(home, cwd, &server()?, path, depth, dirs).await?
+        }
         Cmd::Streams => {
             let Reply::Streams(streams) = connect(home, &server()?)
                 .await?

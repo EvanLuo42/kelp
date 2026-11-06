@@ -442,7 +442,7 @@ async fn hello_reply(
         version,
         role: state.server_role(),
         log_index: reader.last_index().map_err(internal)?.0,
-        capabilities: Capabilities::CONTENT_ACCESS,
+        capabilities: Capabilities(Capabilities::CONTENT_ACCESS.0 | Capabilities::LIST_DIR.0),
         user: name,
     })
 }

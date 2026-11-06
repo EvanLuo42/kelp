@@ -11,7 +11,8 @@ use kelp_proto::{Reply, Request};
 use kelp_workspace::OpenAction;
 
 use crate::util::{
-    action_name, connect, file_action, notice, parse_cl, parse_cl_or_default, unexpected,
+    action_name, connect, file_action, notice, parse_cl, parse_cl_or_default, split_revision,
+    unexpected,
 };
 use crate::{Accept, ClCmd, Cmd, SnapshotCmd, daemon};
 
@@ -508,21 +509,7 @@ async fn server_query(home: &Home, cwd: &Path, command: Cmd) -> anyhow::Result<(
             }
         }
         Cmd::Print { path } => {
-            let (spec, at) = match path.rsplit_once('@') {
-                Some((spec, rev)) => match rev.parse() {
-                    Ok(cl) => (spec, Some(cl)),
-                    Err(_) => {
-                        let request = Request::GetLabel {
-                            name: rev.to_owned(),
-                        };
-                        let Reply::Label(label) = conn.call(&request).await? else {
-                            return Err(unexpected());
-                        };
-                        (spec, Some(label.cl))
-                    }
-                },
-                None => (path.as_str(), None),
-            };
+            let (spec, at) = split_revision(&conn, &path).await?;
             let depot = match spec.starts_with("//") {
                 true => kelp_core::DepotPath::parse(spec)?,
                 false => ws.depot_path_of(&cwd.join(spec))?,

@@ -125,6 +125,26 @@ pub async fn connect(home: &Home, server: &str) -> anyhow::Result<Connection> {
     Ok(home.connect(server).await?)
 }
 
+/// Splits `path@120` or `path@label` into the path and that changelist.
+pub async fn split_revision<'a>(
+    conn: &Connection,
+    spec: &'a str,
+) -> anyhow::Result<(&'a str, Option<u64>)> {
+    let Some((path, rev)) = spec.rsplit_once('@') else {
+        return Ok((spec, None));
+    };
+    if let Ok(cl) = rev.parse() {
+        return Ok((path, Some(cl)));
+    }
+    let request = Request::GetLabel {
+        name: rev.to_owned(),
+    };
+    let Reply::Label(label) = conn.call(&request).await? else {
+        return Err(unexpected());
+    };
+    Ok((path, Some(label.cl)))
+}
+
 /// How [`login`] authenticates.
 pub enum LoginMethod {
     /// A password, for `user` or the operating system user, read from

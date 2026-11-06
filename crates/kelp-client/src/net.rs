@@ -192,6 +192,36 @@ impl Connection {
         }
     }
 
+    /// Returns what is below the stream-relative `path` of `stream`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Invalid`] if the server is too old to list directories,
+    /// [`Error::Remote`] if the path does not exist or may not be read, or an
+    /// error if the connection fails.
+    pub async fn list_dir(
+        &self,
+        stream: &str,
+        path: &str,
+        options: kelp_proto::rpc::ListOptions,
+    ) -> Result<Vec<kelp_proto::rpc::DirEntry>> {
+        // An older server cannot decode the request and only drops the stream.
+        if !self.welcome().capabilities.contains(Capabilities::LIST_DIR) {
+            return Err(Error::Invalid(
+                "this server is too old to list directories; upgrade kelp-server".into(),
+            ));
+        }
+        let request = Request::ListDir {
+            stream: stream.to_owned(),
+            path: path.to_owned(),
+            options,
+        };
+        match self.call(&request).await? {
+            Reply::DirEntries(entries) => Ok(entries),
+            _ => Err(Error::UnexpectedReply),
+        }
+    }
+
     /// Uploads chunks, several batches in parallel.
     ///
     /// # Errors

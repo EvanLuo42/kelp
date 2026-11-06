@@ -108,6 +108,8 @@ This page lists them all.
 | `kelp annotate` | Prints each line of a text file with the changelist and author that last changed it |
 | `kelp print` | Prints a file as of a changelist: `kelp print Source/main.rs@120`. Depot paths such as `//engine/main/a.h` work too |
 | `kelp filelog` | Lists the revisions of a file |
+| `kelp ls` | Lists a directory as the server has it, or the depots and streams above it: `kelp ls //game/main/Content@120`. `-l` shows each file's type, last revision, changelist, author, date and size; `-d` lists only directories |
+| `kelp tree` | Shows a directory and everything below it as a tree; `-L` limits the levels shown and `-d` shows only directories |
 | `kelp changes` | Lists recent changelists |
 | `kelp describe` | Shows one changelist |
 

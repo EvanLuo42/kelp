@@ -2,6 +2,7 @@
 
 mod admin;
 mod artifact;
+mod browse;
 mod daemon;
 mod difftool;
 mod issue;
@@ -390,6 +391,35 @@ enum Cmd {
     Print { path: String },
     /// Lists the revisions of a file.
     Filelog { path: PathBuf },
+    /// Lists a directory as the server has it.
+    ///
+    /// Takes a workspace path, or a depot path such as `//game/main/Content`,
+    /// optionally as of a changelist or label: `kelp ls Content@120`.
+    /// Defaults to the current directory, or outside a workspace to `//`,
+    /// which lists the depots. `//game` lists the streams of a depot.
+    Ls {
+        path: Option<String>,
+        /// Also shows each file's type, last revision, changelist, author,
+        /// date in UTC and size in bytes.
+        #[arg(short, long)]
+        long: bool,
+        /// Lists only directories.
+        #[arg(short, long)]
+        dirs: bool,
+    },
+    /// Shows a directory and everything below it as a tree.
+    ///
+    /// Takes the same paths as `kelp ls`. Above the streams it shows the
+    /// depots and streams, without entering them.
+    Tree {
+        path: Option<String>,
+        /// The number of levels to show; defaults to all of them.
+        #[arg(short = 'L', long, value_parser = clap::value_parser!(u32).range(1..))]
+        depth: Option<u32>,
+        /// Shows only directories.
+        #[arg(short, long)]
+        dirs: bool,
+    },
     /// Lists recent changelists.
     Changes {
         /// Limits the list to one stream; defaults to the workspace's.

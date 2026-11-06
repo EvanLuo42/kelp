@@ -12,6 +12,8 @@ The release workflow publishes the section of the tagged version as the GitHub R
 
 - `kelp resolve --tool`, or `KELP_MERGE_TOOL`, opens files that cannot be merged cleanly in an external merge tool.
 - `kelp unshelve --sync` first brings just the shelf's files to the revisions it was based on, so a reviewer can unshelve in a clean workspace without finding the base changelist.
+- `kelp ls` and `kelp tree` show the depots, streams and directories on the server, as of a changelist or label if given, without needing a workspace.
+  They need a server of this version.
 
 ## [0.2.0] - 2026-11-03
 
