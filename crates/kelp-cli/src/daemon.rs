@@ -177,7 +177,7 @@ async fn start(home: &Home) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     detach(&mut command);
-    if let Err(e) = command.spawn() {
+    if let Err(e) = spawn(&mut command) {
         tracing::info!("cannot start kelpd: {e}");
         return false;
     }
@@ -196,6 +196,56 @@ async fn wait_until(home: &Home, up: bool) -> bool {
         waited += step;
     }
     false
+}
+
+#[cfg(unix)]
+fn spawn(command: &mut Command) -> std::io::Result<std::process::Child> {
+    command.spawn()
+}
+
+/// Spawns kelpd without letting it inherit this process's standard handles.
+///
+/// Windows creates a child with every inheritable handle of its parent, even
+/// when the child's own standard handles are set to NUL. If whoever ran
+/// `kelp` captured its output through a pipe, kelpd would then hold that
+/// pipe's write end for as long as it runs, and the caller would wait for the
+/// end of the output until kelpd exits after its idle timeout.
+#[cfg(windows)]
+fn spawn(command: &mut Command) -> std::io::Result<std::process::Child> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+        fn GetHandleInformation(handle: *mut std::ffi::c_void, flags: *mut u32) -> i32;
+        fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+    }
+    const STD_HANDLES: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    const INVALID_HANDLE_VALUE: isize = -1;
+
+    // Handles that were inheritable, to make so again once kelpd has started.
+    let mut cleared = Vec::new();
+    for which in STD_HANDLES {
+        // SAFETY: plain calls; invalid or null handles make them fail.
+        unsafe {
+            let handle = GetStdHandle(which);
+            if handle.is_null() || handle as isize == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            let mut flags = 0u32;
+            if GetHandleInformation(handle, &mut flags) != 0
+                && flags & HANDLE_FLAG_INHERIT != 0
+                && SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) != 0
+            {
+                cleared.push(handle);
+            }
+        }
+    }
+    let child = command.spawn();
+    for handle in cleared {
+        // SAFETY: the handle was valid above and is still owned by this process.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+    }
+    child
 }
 
 #[cfg(unix)]
